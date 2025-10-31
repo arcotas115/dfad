@@ -1,33 +1,30 @@
-// src/reddit_clone/engine.gleam
+// src/engine.gleam
 // Main Reddit engine that handles all operations
 
 import gleam/dict
-import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
-import gleam/string
-import reddit_clone/types.{
-  type ClientMessage, type Comment, type CommentId, type DirectMessage,
-  type EngineMessage, type EngineResponse, type EngineState, type EngineStats,
-  type MessageId, type Post, type PostId, type ResponseData, type Subreddit,
-  type SubredditName, type User, type UserId, type Vote, Comment, CommentCreated,
-  CommentsData, CreateComment, CreatePost, CreateRepost, CreateSubreddit,
-  DirectMessage, Downvote, EngineState, EngineStats, Error, FeedData,
-  GetComments, GetFeed, GetMessages, GetPost, GetStats, GetSubredditFeed,
-  GetUserKarma, JoinSubreddit, JoinedSubreddit, KarmaData, LeaveSubreddit,
-  LeftSubreddit, LoginUser, LogoutUser, MessageSent, MessagesData, NewComment,
-  NewDirectMessage, NewPost, Post, PostCreated, PostData, PostVoteUpdate,
-  RegisterUser, SendDirectMessage, StatsData, Subreddit, SubredditCreated,
-  Success, Upvote, User, UserRegistered, VoteCast, VoteComment, VotePost,
+import types.{
+  type ClientMessage, type CommentId, type EngineMessage, type EngineResponse,
+  type EngineState, type MessageId, type PostId, type SubredditName, type User,
+  type UserId, type Vote, Comment, CommentCreated, CommentsData, CreateComment,
+  CreatePost, CreateRepost, CreateSubreddit, DirectMessage, Downvote,
+  EngineError, EngineState, EngineStats, FeedData, GetComments, GetFeed,
+  GetMessages, GetPost, GetStats, GetSubredditFeed, GetUserKarma, JoinSubreddit,
+  JoinedSubreddit, KarmaData, LeaveSubreddit, LeftSubreddit, LoginUser,
+  LogoutUser, MessageSent, MessagesData, NewComment, NewDirectMessage, NewPost,
+  Post, PostCreated, PostData, PostVoteUpdate, RegisterUser, SendDirectMessage,
+  StatsData, Subreddit, SubredditCreated, Success, Upvote, User, UserRegistered,
+  VoteCast, VoteComment, VotePost,
 }
-import reddit_clone/utils
+import utils
 
 pub fn start() -> Subject(EngineMessage) {
-  process.spawn(fn() {
+  let subject = process.new_subject()
+
+  process.spawn_unlinked(fn() {
     let initial_state =
       EngineState(
         users: dict.new(),
@@ -41,15 +38,16 @@ pub fn start() -> Subject(EngineMessage) {
         next_comment_id: 1,
         next_message_id: 1,
       )
-    loop(initial_state)
+    loop(subject, initial_state)
   })
-  |> process.new_subject
+
+  subject
 }
 
-fn loop(state: EngineState) -> Nil {
-  let message = process.receive_forever()
+fn loop(subject: Subject(EngineMessage), state: EngineState) -> Nil {
+  let message = process.receive_forever(subject)
   let new_state = handle_message(message, state)
-  loop(new_state)
+  loop(subject, new_state)
 }
 
 fn handle_message(message: EngineMessage, state: EngineState) -> EngineState {
@@ -153,7 +151,7 @@ fn handle_create_subreddit(
     Ok(_user) -> {
       case dict.get(state.subreddits, name) {
         Ok(_) -> {
-          process.send(reply_to, Error("Subreddit already exists"))
+          process.send(reply_to, EngineError("Subreddit already exists"))
           state
         }
         Error(_) -> {
@@ -170,7 +168,6 @@ fn handle_create_subreddit(
 
           let new_subreddits = dict.insert(state.subreddits, name, subreddit)
 
-          // Update user's joined subreddits
           let new_users = case dict.get(state.users, user_id) {
             Ok(user) -> {
               let updated_user =
@@ -189,7 +186,7 @@ fn handle_create_subreddit(
       }
     }
     Error(_) -> {
-      process.send(reply_to, Error("User not found"))
+      process.send(reply_to, EngineError("User not found"))
       state
     }
   }
@@ -208,7 +205,7 @@ fn handle_join_subreddit(
     Ok(user), Ok(subreddit) -> {
       case list.contains(subreddit.members, user_id) {
         True -> {
-          process.send(reply_to, Error("Already a member"))
+          process.send(reply_to, EngineError("Already a member"))
           state
         }
         False -> {
@@ -237,7 +234,7 @@ fn handle_join_subreddit(
       }
     }
     _, _ -> {
-      process.send(reply_to, Error("User or subreddit not found"))
+      process.send(reply_to, EngineError("User or subreddit not found"))
       state
     }
   }
@@ -282,7 +279,7 @@ fn handle_leave_subreddit(
       new_state
     }
     _, _ -> {
-      process.send(reply_to, Error("User or subreddit not found"))
+      process.send(reply_to, EngineError("User or subreddit not found"))
       state
     }
   }
@@ -319,11 +316,9 @@ fn handle_create_post(
 
           let new_posts = dict.insert(state.posts, post_id, post)
 
-          // Auto-upvote by author
           let vote_key = user_id <> "_" <> post_id
           let new_votes = dict.insert(state.user_votes, vote_key, Upvote)
 
-          // Update subreddit post count
           let updated_sub = Subreddit(..sub, post_count: sub.post_count + 1)
           let new_subreddits =
             dict.insert(state.subreddits, subreddit, updated_sub)
@@ -337,20 +332,19 @@ fn handle_create_post(
               next_post_id: state.next_post_id + 1,
             )
 
-          // Notify all members of the subreddit
           broadcast_to_subreddit_members(sub.members, NewPost(post), state)
 
           process.send(reply_to, Success(PostCreated(post_id)))
           new_state
         }
         False -> {
-          process.send(reply_to, Error("Not a member of this subreddit"))
+          process.send(reply_to, EngineError("Not a member of this subreddit"))
           state
         }
       }
     }
     Error(_) -> {
-      process.send(reply_to, Error("Subreddit not found"))
+      process.send(reply_to, EngineError("Subreddit not found"))
       state
     }
   }
@@ -410,13 +404,16 @@ fn handle_create_repost(
           new_state
         }
         False -> {
-          process.send(reply_to, Error("Not a member of this subreddit"))
+          process.send(reply_to, EngineError("Not a member of this subreddit"))
           state
         }
       }
     }
     _, _ -> {
-      process.send(reply_to, Error("Original post or subreddit not found"))
+      process.send(
+        reply_to,
+        EngineError("Original post or subreddit not found"),
+      )
       state
     }
   }
@@ -447,7 +444,6 @@ fn handle_vote_post(
       let new_posts = dict.insert(state.posts, post_id, updated_post)
       let new_votes = dict.insert(state.user_votes, vote_key, vote)
 
-      // Update author's karma
       let new_users =
         update_user_karma(
           state.users,
@@ -463,7 +459,6 @@ fn handle_vote_post(
           users: new_users,
         )
 
-      // Broadcast vote update
       case dict.get(state.subreddits, post.subreddit) {
         Ok(sub) ->
           broadcast_to_subreddit_members(
@@ -478,7 +473,7 @@ fn handle_vote_post(
       new_state
     }
     Error(_) -> {
-      process.send(reply_to, Error("Post not found"))
+      process.send(reply_to, EngineError("Post not found"))
       state
     }
   }
@@ -512,11 +507,9 @@ fn handle_create_comment(
 
       let new_comments = dict.insert(state.comments, comment_id, comment)
 
-      // Auto-upvote by author
       let vote_key = user_id <> "_" <> comment_id
       let new_votes = dict.insert(state.user_votes, vote_key, Upvote)
 
-      // Update parent comment's replies if applicable
       let updated_comments = case parent_id {
         Some(pid) -> {
           case dict.get(new_comments, pid) {
@@ -542,7 +535,6 @@ fn handle_create_comment(
           next_comment_id: state.next_comment_id + 1,
         )
 
-      // Broadcast new comment
       case dict.get(state.subreddits, post.subreddit) {
         Ok(sub) ->
           broadcast_to_subreddit_members(
@@ -557,7 +549,7 @@ fn handle_create_comment(
       new_state
     }
     Error(_) -> {
-      process.send(reply_to, Error("Post not found"))
+      process.send(reply_to, EngineError("Post not found"))
       state
     }
   }
@@ -589,7 +581,6 @@ fn handle_vote_comment(
         dict.insert(state.comments, comment_id, updated_comment)
       let new_votes = dict.insert(state.user_votes, vote_key, vote)
 
-      // Update author's karma
       let new_users =
         update_user_karma(
           state.users,
@@ -609,7 +600,7 @@ fn handle_vote_comment(
       new_state
     }
     Error(_) -> {
-      process.send(reply_to, Error("Comment not found"))
+      process.send(reply_to, EngineError("Comment not found"))
       state
     }
   }
@@ -636,7 +627,7 @@ fn handle_get_feed(
       state
     }
     Error(_) -> {
-      process.send(reply_to, Error("User not found"))
+      process.send(reply_to, EngineError("User not found"))
       state
     }
   }
@@ -675,7 +666,7 @@ fn handle_get_post(
       state
     }
     Error(_) -> {
-      process.send(reply_to, Error("Post not found"))
+      process.send(reply_to, EngineError("Post not found"))
       state
     }
   }
@@ -725,7 +716,6 @@ fn handle_send_dm(
       next_message_id: state.next_message_id + 1,
     )
 
-  // Send notification to recipient if online
   case dict.get(state.user_sessions, recipient) {
     Ok(session) -> process.send(session, NewDirectMessage(message))
     Error(_) -> Nil
@@ -787,7 +777,7 @@ fn handle_get_user_karma(
       state
     }
     Error(_) -> {
-      process.send(reply_to, Error("User not found"))
+      process.send(reply_to, EngineError("User not found"))
       state
     }
   }

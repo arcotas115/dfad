@@ -69,23 +69,22 @@ pub fn random_int(max: Int) -> Int {
 // Zipf distribution generator
 // Returns a value between 1 and n following Zipf distribution with parameter alpha
 pub fn zipf_sample(n: Int, alpha: Float) -> Int {
-  let assert Ok(h_n) = harmonic_number(n, alpha)
+  let h_n = harmonic_number(n, alpha)
   let u = random_float() *. h_n
   find_zipf_value(1, n, u, alpha, 0.0)
 }
 
-fn harmonic_number(n: Int, alpha: Float) -> Result(Float, Nil) {
+fn harmonic_number(n: Int, alpha: Float) -> Float {
   case n {
-    0 -> Error(Nil)
+    0 -> 0.0
     _ -> {
-      let sum =
-        list.range(1, n)
-        |> list.map(fn(i) {
-          let assert Ok(i_float) = int.to_float(i)
-          1.0 /. float.power(i_float, alpha)
-        })
-        |> list.fold(0.0, float.add)
-      Ok(sum)
+      list.range(1, n)
+      |> list.map(fn(i) {
+        let i_float = int.to_float(i)
+        let assert Ok(power_result) = float.power(i_float, alpha)
+        1.0 /. power_result
+      })
+      |> list.fold(0.0, float.add)
     }
   }
 }
@@ -94,10 +93,11 @@ fn find_zipf_value(i: Int, n: Int, u: Float, alpha: Float, acc: Float) -> Int {
   case i > n {
     True -> n
     False -> {
-      let assert Ok(i_float) = int.to_float(i)
-      let prob = 1.0 /. float.power(i_float, alpha)
+      let i_float = int.to_float(i)
+      let assert Ok(power_result) = float.power(i_float, alpha)
+      let prob = 1.0 /. power_result
       let new_acc = acc +. prob
-      case new_acc >= u {
+      case new_acc >=. u {
         True -> i
         False -> find_zipf_value(i + 1, n, u, alpha, new_acc)
       }
@@ -108,36 +108,12 @@ fn find_zipf_value(i: Int, n: Int, u: Float, alpha: Float, acc: Float) -> Int {
 // Generate random string for usernames
 pub fn random_username() -> String {
   let adjectives = [
-    "Happy",
-    "Clever",
-    "Swift",
-    "Brave",
-    "Wise",
-    "Noble",
-    "Mighty",
-    "Gentle",
-    "Bold",
-    "Bright",
-    "Cool",
-    "Epic",
-    "Fierce",
-    "Grand",
+    "Happy", "Clever", "Swift", "Brave", "Wise", "Noble", "Mighty", "Gentle",
+    "Bold", "Bright", "Cool", "Epic", "Fierce", "Grand",
   ]
   let nouns = [
-    "Tiger",
-    "Eagle",
-    "Wolf",
-    "Bear",
-    "Lion",
-    "Hawk",
-    "Falcon",
-    "Dragon",
-    "Phoenix",
-    "Warrior",
-    "Knight",
-    "Wizard",
-    "Sage",
-    "Hero",
+    "Tiger", "Eagle", "Wolf", "Bear", "Lion", "Hawk", "Falcon", "Dragon",
+    "Phoenix", "Warrior", "Knight", "Wizard", "Sage", "Hero",
   ]
 
   let adj = list_at(adjectives, random_int(list.length(adjectives)))
@@ -157,37 +133,13 @@ fn list_at(lst: List(String), index: Int) -> String {
 // Generate random subreddit names
 pub fn random_subreddit_name() -> String {
   let prefixes = [
-    "Ask",
-    "Learn",
-    "Share",
-    "Discuss",
-    "Show",
-    "Tell",
-    "Find",
-    "Explore",
-    "Discover",
-    "Master",
-    "Build",
-    "Create",
+    "Ask", "Learn", "Share", "Discuss", "Show", "Tell", "Find", "Explore",
+    "Discover", "Master", "Build", "Create",
   ]
   let topics = [
-    "Programming",
-    "Science",
-    "Art",
-    "Music",
-    "Gaming",
-    "Books",
-    "Movies",
-    "Food",
-    "Travel",
-    "Tech",
-    "Sports",
-    "History",
-    "Philosophy",
-    "Nature",
-    "Space",
-    "Math",
-    "Design",
+    "Programming", "Science", "Art", "Music", "Gaming", "Books", "Movies",
+    "Food", "Travel", "Tech", "Sports", "History", "Philosophy", "Nature",
+    "Space", "Math", "Design",
   ]
 
   let prefix = list_at(prefixes, random_int(list.length(prefixes)))
@@ -296,8 +248,8 @@ pub fn calculate_engagement_rate(
   case users {
     0 -> 0.0
     n -> {
-      let assert Ok(total_float) = int.to_float(posts + comments + votes)
-      let assert Ok(users_float) = int.to_float(n)
+      let total_float = int.to_float(posts + comments + votes)
+      let users_float = int.to_float(n)
       total_float /. users_float
     }
   }

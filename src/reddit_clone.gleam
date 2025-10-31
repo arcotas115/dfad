@@ -1,22 +1,19 @@
-// src/reddit_clone/simulator.gleam
+// src/reddit_clone.gleam
 // Main simulation orchestrator
 
-import gleam/dict
-import gleam/erlang/process.{type Subject}
+import client_simulator
+import gleam/erlang/process
 import gleam/float
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/string
-import reddit_clone/client_simulator
-import reddit_clone/engine
-import reddit_clone/types.{
-  type EngineMessage, type EngineResponse, type EngineStats,
-  type SimulatorConfig, type SubredditName, CreateSubreddit, Error, GetStats,
-  RegisterUser, SimulatorConfig, StatsData, SubredditCreated, Success,
+import reddit_engine
+import types.{
+  type EngineMessage, type SimulatorConfig, type SubredditName, CreateSubreddit,
+  GetStats, RegisterUser, SimulatorConfig, StatsData, SubredditCreated, Success,
   UserRegistered,
 }
-import reddit_clone/utils
+import utils
 
 // Configuration presets
 pub fn small_test_config() -> SimulatorConfig {
@@ -73,17 +70,17 @@ pub fn run_simulation(config: SimulatorConfig) -> Nil {
 
   // Start the engine
   io.println("\n⚙️  Starting engine...")
-  let engine = engine.start()
+  let engine_subject = reddit_engine.start()
 
   // Create subreddits
   io.println("📁 Creating subreddits...")
-  let subreddit_names = create_subreddits(engine, config.num_subreddits)
+  let subreddit_names = create_subreddits(engine_subject, config.num_subreddits)
 
   // Start client simulators
   io.println(
     "👥 Starting " <> int.to_string(config.num_users) <> " client simulators...",
   )
-  let clients = start_clients(engine, config, subreddit_names)
+  let _clients = start_clients(engine_subject, config, subreddit_names)
 
   // Run simulation
   io.println(
@@ -93,9 +90,9 @@ pub fn run_simulation(config: SimulatorConfig) -> Nil {
   )
 
   // Periodically print stats
-  print_periodic_stats(engine, config.simulation_duration_ms / 3)
-  print_periodic_stats(engine, config.simulation_duration_ms / 3)
-  print_periodic_stats(engine, config.simulation_duration_ms / 3)
+  print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
+  print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
+  print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
 
   // Get final statistics
   let end_time = utils.current_timestamp()
@@ -103,7 +100,7 @@ pub fn run_simulation(config: SimulatorConfig) -> Nil {
 
   io.println("\n📊 Final Statistics")
   io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-  print_final_stats(engine)
+  print_final_stats(engine_subject)
 
   io.println("\n✅ Simulation completed in " <> utils.format_duration(duration))
   io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -132,7 +129,7 @@ fn print_config(config: SimulatorConfig) -> Nil {
 }
 
 fn create_subreddits(
-  engine: Subject(EngineMessage),
+  engine_subject: process.Subject(EngineMessage),
   num_subreddits: Int,
 ) -> List(SubredditName) {
   list.range(1, num_subreddits)
@@ -142,7 +139,7 @@ fn create_subreddits(
 
     // Use a default admin user for creating subreddits
     process.send(
-      engine,
+      engine_subject,
       RegisterUser("admin_" <> int.to_string(i), response_subject),
     )
 
@@ -150,38 +147,39 @@ fn create_subreddits(
       Ok(Success(UserRegistered(user_id))) -> {
         let desc = "A community for discussing " <> name
         process.send(
-          engine,
+          engine_subject,
           CreateSubreddit(user_id, name, desc, response_subject),
         )
 
         case process.receive(response_subject, 1000) {
           Ok(Success(SubredditCreated(subreddit_name))) -> subreddit_name
           _ -> name
-          // Fallback to name even if creation failed
         }
       }
       _ -> name
-      // Fallback
     }
   })
 }
 
 fn start_clients(
-  engine: Subject(EngineMessage),
+  engine_subject: process.Subject(EngineMessage),
   config: SimulatorConfig,
   subreddits: List(SubredditName),
-) -> List(Subject(client_simulator.ClientControl)) {
+) -> List(process.Subject(client_simulator.ClientControl)) {
   list.range(1, config.num_users)
   |> list.map(fn(i) {
-    client_simulator.start_client(engine, config, i, subreddits)
+    client_simulator.start_client(engine_subject, config, i, subreddits)
   })
 }
 
-fn print_periodic_stats(engine: Subject(EngineMessage), wait_ms: Int) -> Nil {
+fn print_periodic_stats(
+  engine_subject: process.Subject(EngineMessage),
+  wait_ms: Int,
+) -> Nil {
   utils.sleep(wait_ms)
 
   let response_subject = process.new_subject()
-  process.send(engine, GetStats(response_subject))
+  process.send(engine_subject, GetStats(response_subject))
 
   case process.receive(response_subject, 1000) {
     Ok(Success(StatsData(stats))) -> {
@@ -194,9 +192,9 @@ fn print_periodic_stats(engine: Subject(EngineMessage), wait_ms: Int) -> Nil {
   }
 }
 
-fn print_final_stats(engine: Subject(EngineMessage)) -> Nil {
+fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
   let response_subject = process.new_subject()
-  process.send(engine, GetStats(response_subject))
+  process.send(engine_subject, GetStats(response_subject))
 
   case process.receive(response_subject, 1000) {
     Ok(Success(StatsData(stats))) -> {
@@ -218,4 +216,8 @@ fn print_final_stats(engine: Subject(EngineMessage)) -> Nil {
     }
     _ -> io.println("⚠️  Failed to get final stats")
   }
+}
+
+pub fn main() {
+  run_simulation(default_config())
 }

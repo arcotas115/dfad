@@ -1,10 +1,9 @@
-// src/reddit_clone/types.gleam
+// src/types.gleam
 // Core data types for the Reddit clone
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
-import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 
 // User related types
 pub type UserId =
@@ -103,7 +102,6 @@ pub type EngineState {
     comments: Dict(CommentId, Comment),
     messages: Dict(MessageId, DirectMessage),
     user_votes: Dict(String, Vote),
-    // "userid_postid" or "userid_commentid" -> Vote
     user_sessions: Dict(UserId, Subject(ClientMessage)),
     next_post_id: Int,
     next_comment_id: Int,
@@ -113,12 +111,9 @@ pub type EngineState {
 
 // Messages between client and engine
 pub type EngineMessage {
-  // User management
   RegisterUser(username: String, reply_to: Subject(EngineResponse))
   LoginUser(user_id: UserId, session: Subject(ClientMessage))
   LogoutUser(user_id: UserId)
-
-  // Subreddit operations
   CreateSubreddit(
     user_id: UserId,
     name: String,
@@ -135,8 +130,6 @@ pub type EngineMessage {
     subreddit: SubredditName,
     reply_to: Subject(EngineResponse),
   )
-
-  // Post operations
   CreatePost(
     user_id: UserId,
     subreddit: SubredditName,
@@ -156,8 +149,6 @@ pub type EngineMessage {
     vote: Vote,
     reply_to: Subject(EngineResponse),
   )
-
-  // Comment operations
   CreateComment(
     user_id: UserId,
     post_id: PostId,
@@ -171,8 +162,6 @@ pub type EngineMessage {
     vote: Vote,
     reply_to: Subject(EngineResponse),
   )
-
-  // Feed and content retrieval
   GetFeed(user_id: UserId, limit: Int, reply_to: Subject(EngineResponse))
   GetSubredditFeed(
     subreddit: SubredditName,
@@ -181,8 +170,6 @@ pub type EngineMessage {
   )
   GetPost(post_id: PostId, reply_to: Subject(EngineResponse))
   GetComments(post_id: PostId, reply_to: Subject(EngineResponse))
-
-  // Direct messages
   SendDirectMessage(
     sender: UserId,
     recipient: UserId,
@@ -191,8 +178,6 @@ pub type EngineMessage {
     reply_subject: Subject(EngineResponse),
   )
   GetMessages(user_id: UserId, reply_to: Subject(EngineResponse))
-
-  // Stats and monitoring
   GetStats(reply_to: Subject(EngineResponse))
   GetUserKarma(user_id: UserId, reply_to: Subject(EngineResponse))
 }
@@ -200,7 +185,7 @@ pub type EngineMessage {
 // Responses from engine
 pub type EngineResponse {
   Success(data: ResponseData)
-  Error(message: String)
+  EngineError(message: String)
 }
 
 pub type ResponseData {
@@ -249,7 +234,6 @@ pub type ClientState {
     is_connected: Bool,
     joined_subreddits: List(SubredditName),
     activity_level: Float,
-    // 0.0 to 1.0, influenced by Zipf distribution
   )
 }
 
