@@ -133,20 +133,26 @@ fn perform_random_activity(
   let activity_roll = utils.random_float()
   let adjusted_probability = fn(base: Float) { base *. state.activity_level }
   
-  case True {
-    _ if activity_roll <. adjusted_probability(config.post_probability) -> {
+  // Pre-calculate adjusted probabilities to avoid function calls in guards
+  let post_prob = adjusted_probability(config.post_probability)
+  let comment_prob = adjusted_probability(config.comment_probability)
+  let vote_prob = adjusted_probability(config.vote_probability)
+  let dm_prob = adjusted_probability(config.dm_probability)
+  
+  case activity_roll {
+    _ if activity_roll <. post_prob -> {
       create_random_post(engine, state)
       state
     }
-    _ if activity_roll <. adjusted_probability(config.post_probability +. config.comment_probability) -> {
+    _ if activity_roll <. post_prob +. comment_prob -> {
       create_random_comment(engine, state)
       state
     }
-    _ if activity_roll <. adjusted_probability(config.post_probability +. config.comment_probability +. config.vote_probability) -> {
+    _ if activity_roll <. post_prob +. comment_prob +. vote_prob -> {
       vote_randomly(engine, state)
       state
     }
-    _ if activity_roll <. adjusted_probability(config.post_probability +. config.comment_probability +. config.vote_probability +. config.dm_probability) -> {
+    _ if activity_roll <. post_prob +. comment_prob +. vote_prob +. dm_prob -> {
       send_random_dm(engine, state)
       state
     }

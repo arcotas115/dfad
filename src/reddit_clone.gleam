@@ -1,169 +1,221 @@
-// src/reddit_clone.gleam
-// Main entry point for the Reddit Clone simulation
+// src/reddit_clone/simulator.gleam
+// Main simulation orchestrator
 
-import gleam/erlang/atom
-import gleam/erlang/process
+import gleam/dict
+import gleam/erlang/process.{type Subject}
+import gleam/float
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/string
-import reddit_clone/simulator
-import reddit_clone/types.{SimulatorConfig}
+import reddit_clone/client_simulator
+import reddit_clone/engine
+import reddit_clone/types.{
+  type EngineMessage, type EngineResponse, type EngineStats,
+  type SimulatorConfig, type SubredditName, CreateSubreddit, Error, GetStats,
+  RegisterUser, SimulatorConfig, StatsData, SubredditCreated, Success,
+  UserRegistered,
+}
+import reddit_clone/utils
 
-pub fn main() {
-  io.println(
-    "
-╔════════════════════════════════════════╗
-║        Reddit Clone Simulator          ║
-║         Built with Gleam               ║
-╚════════════════════════════════════════╝
-  ",
+// Configuration presets
+pub fn small_test_config() -> SimulatorConfig {
+  SimulatorConfig(
+    num_users: 10,
+    num_subreddits: 3,
+    simulation_duration_ms: 10_000,
+    zipf_alpha: 1.2,
+    connection_probability: 0.95,
+    post_probability: 0.05,
+    comment_probability: 0.15,
+    vote_probability: 0.25,
+    dm_probability: 0.02,
+    repost_probability: 0.1,
   )
-
-  // Parse command line arguments or use defaults
-  let config = parse_args()
-
-  // Print ASCII art logo
-  print_logo()
-
-  // Run the simulation
-  simulator.run_simulation(config)
-
-  io.println("\n👋 Thank you for using Reddit Clone Simulator!")
 }
 
-fn parse_args() -> SimulatorConfig {
-  // In a real implementation, would parse actual command line args
-  // For now, we'll provide options via code
+pub fn default_config() -> SimulatorConfig {
+  SimulatorConfig(
+    num_users: 100,
+    num_subreddits: 20,
+    simulation_duration_ms: 30_000,
+    zipf_alpha: 1.2,
+    connection_probability: 0.95,
+    post_probability: 0.03,
+    comment_probability: 0.1,
+    vote_probability: 0.2,
+    dm_probability: 0.01,
+    repost_probability: 0.05,
+  )
+}
 
-  io.println("Select simulation configuration:")
-  io.println("1. Small Test (10 users, 3 subreddits, 10 seconds)")
-  io.println("2. Default (100 users, 20 subreddits, 30 seconds)")
-  io.println("3. Large Scale (1000 users, 100 subreddits, 60 seconds)")
-  io.println("")
+pub fn large_scale_config() -> SimulatorConfig {
+  SimulatorConfig(
+    num_users: 1000,
+    num_subreddits: 100,
+    simulation_duration_ms: 60_000,
+    zipf_alpha: 1.5,
+    connection_probability: 0.9,
+    post_probability: 0.02,
+    comment_probability: 0.08,
+    vote_probability: 0.15,
+    dm_probability: 0.005,
+    repost_probability: 0.03,
+  )
+}
 
-  // For automated testing, we'll use the default config
-  // In a real implementation, would read from stdin
-  let choice = 2
+pub fn run_simulation(config: SimulatorConfig) -> Nil {
+  io.println("\n🚀 Starting Reddit Clone Simulation")
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  print_config(config)
 
-  case choice {
-    1 -> {
-      io.println("→ Selected: Small Test Configuration")
-      simulator.small_test_config()
+  let start_time = utils.current_timestamp()
+
+  // Start the engine
+  io.println("\n⚙️  Starting engine...")
+  let engine = engine.start()
+
+  // Create subreddits
+  io.println("📁 Creating subreddits...")
+  let subreddit_names = create_subreddits(engine, config.num_subreddits)
+
+  // Start client simulators
+  io.println(
+    "👥 Starting " <> int.to_string(config.num_users) <> " client simulators...",
+  )
+  let clients = start_clients(engine, config, subreddit_names)
+
+  // Run simulation
+  io.println(
+    "\n🎮 Simulation running for "
+    <> utils.format_duration(config.simulation_duration_ms)
+    <> "...",
+  )
+
+  // Periodically print stats
+  print_periodic_stats(engine, config.simulation_duration_ms / 3)
+  print_periodic_stats(engine, config.simulation_duration_ms / 3)
+  print_periodic_stats(engine, config.simulation_duration_ms / 3)
+
+  // Get final statistics
+  let end_time = utils.current_timestamp()
+  let duration = end_time - start_time
+
+  io.println("\n📊 Final Statistics")
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  print_final_stats(engine)
+
+  io.println("\n✅ Simulation completed in " <> utils.format_duration(duration))
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+  Nil
+}
+
+fn print_config(config: SimulatorConfig) -> Nil {
+  io.println("📋 Configuration:")
+  io.println("  • Users: " <> int.to_string(config.num_users))
+  io.println("  • Subreddits: " <> int.to_string(config.num_subreddits))
+  io.println(
+    "  • Duration: " <> utils.format_duration(config.simulation_duration_ms),
+  )
+  io.println("  • Zipf α: " <> float.to_string(config.zipf_alpha))
+  io.println(
+    "  • Connection probability: "
+    <> float.to_string(config.connection_probability),
+  )
+  io.println("  • Activity probabilities:")
+  io.println("    - Post: " <> float.to_string(config.post_probability))
+  io.println("    - Comment: " <> float.to_string(config.comment_probability))
+  io.println("    - Vote: " <> float.to_string(config.vote_probability))
+  io.println("    - DM: " <> float.to_string(config.dm_probability))
+  io.println("    - Repost: " <> float.to_string(config.repost_probability))
+}
+
+fn create_subreddits(
+  engine: Subject(EngineMessage),
+  num_subreddits: Int,
+) -> List(SubredditName) {
+  list.range(1, num_subreddits)
+  |> list.map(fn(i) {
+    let name = utils.random_subreddit_name() <> "_" <> int.to_string(i)
+    let response_subject = process.new_subject()
+
+    // Use a default admin user for creating subreddits
+    process.send(
+      engine,
+      RegisterUser("admin_" <> int.to_string(i), response_subject),
+    )
+
+    case process.receive(response_subject, 1000) {
+      Ok(Success(UserRegistered(user_id))) -> {
+        let desc = "A community for discussing " <> name
+        process.send(
+          engine,
+          CreateSubreddit(user_id, name, desc, response_subject),
+        )
+
+        case process.receive(response_subject, 1000) {
+          Ok(Success(SubredditCreated(subreddit_name))) -> subreddit_name
+          _ -> name
+          // Fallback to name even if creation failed
+        }
+      }
+      _ -> name
+      // Fallback
     }
-    3 -> {
-      io.println("→ Selected: Large Scale Configuration")
-      simulator.large_scale_config()
+  })
+}
+
+fn start_clients(
+  engine: Subject(EngineMessage),
+  config: SimulatorConfig,
+  subreddits: List(SubredditName),
+) -> List(Subject(client_simulator.ClientControl)) {
+  list.range(1, config.num_users)
+  |> list.map(fn(i) {
+    client_simulator.start_client(engine, config, i, subreddits)
+  })
+}
+
+fn print_periodic_stats(engine: Subject(EngineMessage), wait_ms: Int) -> Nil {
+  utils.sleep(wait_ms)
+
+  let response_subject = process.new_subject()
+  process.send(engine, GetStats(response_subject))
+
+  case process.receive(response_subject, 1000) {
+    Ok(Success(StatsData(stats))) -> {
+      io.println("\n📈 Current Stats:")
+      io.println("  • Active users: " <> int.to_string(stats.active_sessions))
+      io.println("  • Total posts: " <> int.to_string(stats.total_posts))
+      io.println("  • Total comments: " <> int.to_string(stats.total_comments))
     }
-    _ -> {
-      io.println("→ Selected: Default Configuration")
-      simulator.default_config()
-    }
+    _ -> io.println("⚠️  Failed to get stats")
   }
 }
 
-fn print_logo() {
-  io.println(
-    "
-       🚀 Reddit Clone Engine 🚀
-    ┌─────────────────────────────┐
-    │  ▲ Upvote                   │
-    │  ┃                          │
-    │  ● ━━━━━ Posts & Comments   │
-    │  ┃                          │
-    │  ▼ Downvote                 │
-    └─────────────────────────────┘
-  ",
-  )
-}
+fn print_final_stats(engine: Subject(EngineMessage)) -> Nil {
+  let response_subject = process.new_subject()
+  process.send(engine, GetStats(response_subject))
 
-// Additional CLI functions that could be implemented
-pub fn run_with_config(
-  users: Int,
-  subreddits: Int,
-  duration_seconds: Int,
-) -> Nil {
-  let config =
-    SimulatorConfig(
-      num_users: users,
-      num_subreddits: subreddits,
-      simulation_duration_ms: duration_seconds * 1000,
-      zipf_alpha: 1.2,
-      connection_probability: 0.95,
-      post_probability: 0.05,
-      comment_probability: 0.15,
-      vote_probability: 0.25,
-      dm_probability: 0.02,
-      repost_probability: 0.1,
-    )
+  case process.receive(response_subject, 1000) {
+    Ok(Success(StatsData(stats))) -> {
+      io.println("• Total users: " <> int.to_string(stats.total_users))
+      io.println(
+        "• Total subreddits: " <> int.to_string(stats.total_subreddits),
+      )
+      io.println("• Total posts: " <> int.to_string(stats.total_posts))
+      io.println("• Total comments: " <> int.to_string(stats.total_comments))
+      io.println("• Total messages: " <> int.to_string(stats.total_messages))
+      io.println("• Active sessions: " <> int.to_string(stats.active_sessions))
 
-  simulator.run_simulation(config)
-}
-
-// Benchmark function for testing performance
-pub fn benchmark() -> Nil {
-  io.println("🔬 Running benchmark suite...")
-
-  let configs = [
-    #(
-      "Minimal",
-      SimulatorConfig(
-        num_users: 5,
-        num_subreddits: 2,
-        simulation_duration_ms: 5000,
-        zipf_alpha: 1.0,
-        connection_probability: 1.0,
-        post_probability: 0.2,
-        comment_probability: 0.3,
-        vote_probability: 0.4,
-        dm_probability: 0.1,
-        repost_probability: 0.1,
-      ),
-    ),
-    #("Small", simulator.small_test_config()),
-    #("Medium", simulator.default_config()),
-  ]
-
-  list.each(configs, fn(config_tuple) {
-    let #(name, config) = config_tuple
-    io.println("\n📊 Running " <> name <> " benchmark...")
-    let start = current_time_ms()
-    simulator.run_simulation(config)
-    let end = current_time_ms()
-    let duration = end - start
-    io.println(
-      "✅ " <> name <> " completed in " <> int.to_string(duration) <> "ms",
-    )
-  })
-
-  io.println("\n🎯 Benchmark suite complete!")
-}
-
-@external(erlang, "erlang", "system_time")
-fn system_time(unit: atom.Atom) -> Int
-
-fn current_time_ms() -> Int {
-  system_time(atom.create("millisecond"))
-}
-
-// Test function to verify basic functionality
-pub fn test_basic() -> Nil {
-  io.println("🧪 Running basic functionality test...")
-
-  let test_config =
-    SimulatorConfig(
-      num_users: 3,
-      num_subreddits: 2,
-      simulation_duration_ms: 2000,
-      zipf_alpha: 1.0,
-      connection_probability: 1.0,
-      post_probability: 0.5,
-      comment_probability: 0.5,
-      vote_probability: 0.5,
-      dm_probability: 0.0,
-      repost_probability: 0.0,
-    )
-
-  simulator.run_simulation(test_config)
-  io.println("✅ Basic test complete!")
+      io.println("\n🏆 Most Popular Subreddits:")
+      list.take(stats.most_popular_subreddits, 5)
+      |> list.each(fn(pair) {
+        let #(name, count) = pair
+        io.println("  • " <> name <> ": " <> int.to_string(count) <> " members")
+      })
+    }
+    _ -> io.println("⚠️  Failed to get final stats")
+  }
 }
