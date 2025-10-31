@@ -1,21 +1,25 @@
 // src/client_simulator.gleam
-// Client simulator that simulates multiple Reddit users
+// Client simulator with Zipf distribution for subreddit popularity
 
 import gleam/erlang/process.{type Subject}
 import gleam/float
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import types.{
   type ClientMessage, type ClientState, type EngineMessage, type SubredditName,
-  ClientState, CreateComment, CreatePost, Downvote, FeedData, GetFeed,
-  JoinSubreddit, JoinedSubreddit, LoginUser, NewComment, NewDirectMessage,
-  NewPost, PostVoteUpdate, RegisterUser, Success, Upvote, UserRegistered,
-  VotePost,
+  ClientState, CreateComment, CreatePost, Downvote, GetFeed, JoinSubreddit,
+  LoginUser, NewComment, NewDirectMessage, NewPost, PostVoteUpdate, RegisterUser,
+  Upvote, VotePost,
 }
 import utils
 
-// Client process that simulates a single user
+pub type ClientControl {
+  Stop
+}
+
+// Start client with Zipf distribution
 pub fn start_client(
   engine: Subject(EngineMessage),
   config: types.SimulatorConfig,
@@ -25,58 +29,58 @@ pub fn start_client(
   let control_subject = process.new_subject()
 
   process.spawn_unlinked(fn() {
-    // Register the user
     let username = utils.random_username() <> "_" <> int.to_string(client_id)
-    let response_subject = process.new_subject()
 
-    process.send(engine, RegisterUser(username, response_subject))
+    // FIRE-AND-FORGET registration
+    process.send(engine, RegisterUser(username))
 
-    let assert Ok(response) = process.receive(response_subject, 5000)
-    let assert Success(UserRegistered(user_id)) = response
+    utils.sleep(20 + utils.random_int(80))
 
-    // Calculate activity level based on Zipf distribution
+    // Calculate activity based on Zipf
     let activity_level =
       calculate_activity_level(client_id, config.num_users, config.zipf_alpha)
 
     let initial_state =
       ClientState(
-        user_id: user_id,
+        user_id: username,
         username: username,
         is_connected: True,
         joined_subreddits: [],
         activity_level: activity_level,
       )
 
-    // Create subject for receiving messages from engine
     let client_messages = process.new_subject()
-    process.send(engine, LoginUser(user_id, client_messages))
 
-    // Join some subreddits based on activity level
+    // FIRE-AND-FORGET login
+    process.send(engine, LoginUser(username, client_messages))
+
+    utils.sleep(50)
+
+    // Join subreddits using Zipf distribution (popular subreddits more likely)
     let num_subreddits_to_join =
-      float.round(activity_level *. int.to_float(list.length(all_subreddits)))
-      |> int.max(1)
-      |> int.min(list.length(all_subreddits))
+      calculate_subreddit_count(activity_level, list.length(all_subreddits))
 
     let state_with_subreddits =
-      join_random_subreddits(
+      join_subreddits_zipf(
         engine,
         initial_state,
         all_subreddits,
         num_subreddits_to_join,
+        config.zipf_alpha,
       )
+
+    io.println(
+      "✓ Client "
+      <> username
+      <> " ready (activity: "
+      <> float.to_string(activity_level)
+      <> ")",
+    )
 
     client_loop(engine, config, state_with_subreddits, client_messages)
   })
 
   control_subject
-}
-
-pub type ClientControl {
-  SimulateActivity
-  Disconnect
-  Reconnect
-  GetStatus(reply_to: Subject(ClientState))
-  Stop
 }
 
 fn client_loop(
@@ -85,14 +89,12 @@ fn client_loop(
   state: ClientState,
   messages: Subject(ClientMessage),
 ) -> Nil {
-  // Handle messages with timeout
   case process.receive(messages, 100) {
     Ok(msg) -> {
       let _ = handle_engine_message(msg)
       client_loop(engine, config, state, messages)
     }
     _ -> {
-      // Timeout - perform random activity if connected
       case state.is_connected {
         True -> {
           let new_state = perform_random_activity(engine, config, state)
@@ -124,7 +126,6 @@ fn perform_random_activity(
   let post_prob = adjusted_probability(config.post_probability)
   let comment_prob = adjusted_probability(config.comment_probability)
   let vote_prob = adjusted_probability(config.vote_probability)
-  let dm_prob = adjusted_probability(config.dm_probability)
 
   case activity_roll {
     _ if activity_roll <. post_prob -> {
@@ -139,59 +140,76 @@ fn perform_random_activity(
       vote_randomly(engine, state)
       state
     }
-    _ if activity_roll <. post_prob +. comment_prob +. vote_prob +. dm_prob -> {
-      let _ = send_random_dm(engine, state)
-      state
-    }
     _ -> state
   }
 }
 
-fn join_random_subreddits(
+// Join subreddits using Zipf distribution (popular ones more likely)
+fn join_subreddits_zipf(
   engine: Subject(EngineMessage),
   state: ClientState,
   available_subreddits: List(SubredditName),
   num_to_join: Int,
+  zipf_alpha: Float,
 ) -> ClientState {
   let subreddits_to_join =
-    select_random_elements(available_subreddits, num_to_join)
+    select_subreddits_zipf(available_subreddits, num_to_join, zipf_alpha)
 
-  let joined_subreddits =
-    list.fold(subreddits_to_join, state.joined_subreddits, fn(acc, subreddit) {
-      let response_subject = process.new_subject()
-      process.send(
-        engine,
-        JoinSubreddit(state.user_id, subreddit, response_subject),
-      )
+  // FIRE-AND-FORGET joins
+  list.each(subreddits_to_join, fn(subreddit) {
+    process.send(engine, JoinSubreddit(state.user_id, subreddit))
+    utils.sleep(10)
+  })
 
-      case process.receive(response_subject, 1000) {
-        Ok(Success(JoinedSubreddit(_))) -> [subreddit, ..acc]
-        _ -> acc
-      }
-    })
-
-  ClientState(..state, joined_subreddits: joined_subreddits)
+  ClientState(..state, joined_subreddits: subreddits_to_join)
 }
 
-fn select_random_elements(lst: List(a), count: Int) -> List(a) {
-  do_select_random(lst, count, [])
+// Select subreddits using Zipf - first subreddits are most popular
+fn select_subreddits_zipf(
+  subreddits: List(SubredditName),
+  count: Int,
+  zipf_alpha: Float,
+) -> List(SubredditName) {
+  let total = list.length(subreddits)
+
+  list.range(1, count)
+  |> list.map(fn(_) {
+    // Use Zipf to pick subreddit rank (1 is most popular)
+    let rank = utils.zipf_sample(total, zipf_alpha)
+    list_at_index(subreddits, rank - 1)
+  })
+  |> list.filter_map(fn(opt) {
+    case opt {
+      Some(s) -> Ok(s)
+      None -> Error(Nil)
+    }
+  })
+  |> deduplicate
 }
 
-fn do_select_random(lst: List(a), remaining: Int, acc: List(a)) -> List(a) {
-  case remaining, lst {
-    0, _ -> acc
-    _, [] -> acc
-    n, items -> {
-      let index = utils.random_int(list.length(items))
-      case list_at_index(items, index - 1) {
-        Some(item) -> {
-          let new_list = list.filter(items, fn(x) { x != item })
-          do_select_random(new_list, n - 1, [item, ..acc])
-        }
-        None -> acc
+// Remove duplicates
+fn deduplicate(lst: List(a)) -> List(a) {
+  do_deduplicate(lst, [])
+}
+
+fn do_deduplicate(lst: List(a), acc: List(a)) -> List(a) {
+  case lst {
+    [] -> list.reverse(acc)
+    [head, ..tail] -> {
+      case list.contains(acc, head) {
+        True -> do_deduplicate(tail, acc)
+        False -> do_deduplicate(tail, [head, ..acc])
       }
     }
   }
+}
+
+fn calculate_subreddit_count(
+  activity_level: Float,
+  total_subreddits: Int,
+) -> Int {
+  let base_count = float.round(activity_level *. int.to_float(total_subreddits))
+  int.max(1, int.min(base_count, total_subreddits))
 }
 
 fn list_at_index(lst: List(a), index: Int) -> Option(a) {
@@ -209,40 +227,12 @@ fn create_random_post(engine: Subject(EngineMessage), state: ClientState) -> Nil
     subreddits -> {
       case list_random_element(subreddits) {
         Some(subreddit) -> {
-          let response_subject = process.new_subject()
-          let should_repost =
-            utils.random_float() <. 0.2 *. state.activity_level
-
-          case should_repost {
-            True -> {
-              let title = "[REPOST] " <> utils.random_post_title()
-              let content = utils.random_post_content()
-              process.send(
-                engine,
-                CreatePost(
-                  state.user_id,
-                  subreddit,
-                  title,
-                  content,
-                  response_subject,
-                ),
-              )
-            }
-            False -> {
-              let title = utils.random_post_title()
-              let content = utils.random_post_content()
-              process.send(
-                engine,
-                CreatePost(
-                  state.user_id,
-                  subreddit,
-                  title,
-                  content,
-                  response_subject,
-                ),
-              )
-            }
-          }
+          let title = utils.random_post_title()
+          let content = utils.random_post_content()
+          process.send(
+            engine,
+            CreatePost(state.user_id, subreddit, title, content),
+          )
           Nil
         }
         None -> Nil
@@ -258,21 +248,14 @@ fn create_random_comment(
   let response_subject = process.new_subject()
   process.send(engine, GetFeed(state.user_id, 10, response_subject))
 
-  case process.receive(response_subject, 1000) {
-    Ok(Success(FeedData(posts))) -> {
+  case process.receive(response_subject, 200) {
+    Ok(types.Success(types.FeedData(posts))) -> {
       case list_random_element(posts) {
         Some(post) -> {
           let content = utils.random_comment()
-          let comment_response = process.new_subject()
           process.send(
             engine,
-            CreateComment(
-              state.user_id,
-              post.id,
-              None,
-              content,
-              comment_response,
-            ),
+            CreateComment(state.user_id, post.id, None, content),
           )
           Nil
         }
@@ -287,19 +270,15 @@ fn vote_randomly(engine: Subject(EngineMessage), state: ClientState) -> Nil {
   let response_subject = process.new_subject()
   process.send(engine, GetFeed(state.user_id, 20, response_subject))
 
-  case process.receive(response_subject, 1000) {
-    Ok(Success(FeedData(posts))) -> {
+  case process.receive(response_subject, 200) {
+    Ok(types.Success(types.FeedData(posts))) -> {
       case list_random_element(posts) {
         Some(post) -> {
           let vote = case utils.random_float() <. 0.8 {
             True -> Upvote
             False -> Downvote
           }
-          let vote_response = process.new_subject()
-          process.send(
-            engine,
-            VotePost(state.user_id, post.id, vote, vote_response),
-          )
+          process.send(engine, VotePost(state.user_id, post.id, vote))
           Nil
         }
         None -> Nil
@@ -309,11 +288,8 @@ fn vote_randomly(engine: Subject(EngineMessage), state: ClientState) -> Nil {
   }
 }
 
-fn send_random_dm(_engine: Subject(EngineMessage), _state: ClientState) -> Nil {
-  // Simplified - would need access to other user IDs
-  Nil
-}
-
+// Calculate activity level using Zipf distribution
+// ✅ FIX: Prefix unused parameter with underscore
 fn calculate_activity_level(
   _client_id: Int,
   total_clients: Int,
@@ -322,18 +298,16 @@ fn calculate_activity_level(
   let rank = utils.zipf_sample(total_clients, zipf_alpha)
   let rank_float = int.to_float(rank)
   let total_float = int.to_float(total_clients)
+  // Higher rank = lower activity (rank 1 is most active)
   1.0 -. { rank_float /. total_float }
 }
 
 fn list_random_element(lst: List(a)) -> Option(a) {
-  let index = utils.random_int(list.length(lst))
-  case list_at_index(lst, index - 1) {
-    Some(element) -> Some(element)
-    None -> {
-      case lst {
-        [first, ..] -> Some(first)
-        [] -> None
-      }
+  case lst {
+    [] -> None
+    items -> {
+      let index = utils.random_int(list.length(items))
+      list_at_index(items, index)
     }
   }
 }

@@ -106,62 +106,49 @@ pub type EngineState {
     next_post_id: Int,
     next_comment_id: Int,
     next_message_id: Int,
+    metrics: PerformanceMetrics,
+    start_time: Int,
+  )
+}
+
+// Performance Metrics
+pub type PerformanceMetrics {
+  PerformanceMetrics(
+    total_posts_created: Int,
+    total_comments_created: Int,
+    total_votes_cast: Int,
+    total_messages_sent: Int,
+    messages_processed: Int,
   )
 }
 
 // Messages between client and engine
 pub type EngineMessage {
-  RegisterUser(username: String, reply_to: Subject(EngineResponse))
+  RegisterUser(username: String)
   LoginUser(user_id: UserId, session: Subject(ClientMessage))
   LogoutUser(user_id: UserId)
-  CreateSubreddit(
-    user_id: UserId,
-    name: String,
-    description: String,
-    reply_to: Subject(EngineResponse),
-  )
-  JoinSubreddit(
-    user_id: UserId,
-    subreddit: SubredditName,
-    reply_to: Subject(EngineResponse),
-  )
-  LeaveSubreddit(
-    user_id: UserId,
-    subreddit: SubredditName,
-    reply_to: Subject(EngineResponse),
-  )
+  CreateSubreddit(user_id: UserId, name: String, description: String)
+  JoinSubreddit(user_id: UserId, subreddit: SubredditName)
+  LeaveSubreddit(user_id: UserId, subreddit: SubredditName)
   CreatePost(
     user_id: UserId,
     subreddit: SubredditName,
     title: String,
     content: String,
-    reply_to: Subject(EngineResponse),
   )
   CreateRepost(
     user_id: UserId,
     original_post_id: PostId,
     subreddit: SubredditName,
-    reply_to: Subject(EngineResponse),
   )
-  VotePost(
-    user_id: UserId,
-    post_id: PostId,
-    vote: Vote,
-    reply_to: Subject(EngineResponse),
-  )
+  VotePost(user_id: UserId, post_id: PostId, vote: Vote)
   CreateComment(
     user_id: UserId,
     post_id: PostId,
     parent_id: Option(CommentId),
     content: String,
-    reply_to: Subject(EngineResponse),
   )
-  VoteComment(
-    user_id: UserId,
-    comment_id: CommentId,
-    vote: Vote,
-    reply_to: Subject(EngineResponse),
-  )
+  VoteComment(user_id: UserId, comment_id: CommentId, vote: Vote)
   GetFeed(user_id: UserId, limit: Int, reply_to: Subject(EngineResponse))
   GetSubredditFeed(
     subreddit: SubredditName,
@@ -175,7 +162,6 @@ pub type EngineMessage {
     recipient: UserId,
     content: String,
     reply_to: Option(MessageId),
-    reply_subject: Subject(EngineResponse),
   )
   GetMessages(user_id: UserId, reply_to: Subject(EngineResponse))
   GetStats(reply_to: Subject(EngineResponse))
@@ -223,6 +209,8 @@ pub type EngineStats {
     total_messages: Int,
     active_sessions: Int,
     most_popular_subreddits: List(#(SubredditName, Int)),
+    performance_metrics: PerformanceMetrics,
+    uptime_seconds: Int,
   )
 }
 

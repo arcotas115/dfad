@@ -1,5 +1,5 @@
 // src/reddit_clone.gleam
-// Main simulation orchestrator
+// Main simulation orchestrator with Zipf distribution
 
 import client_simulator
 import gleam/erlang/process
@@ -10,12 +10,10 @@ import gleam/list
 import reddit_engine
 import types.{
   type EngineMessage, type SimulatorConfig, type SubredditName, CreateSubreddit,
-  GetStats, RegisterUser, SimulatorConfig, StatsData, SubredditCreated, Success,
-  UserRegistered,
+  GetStats, RegisterUser, SimulatorConfig, StatsData, Success,
 }
 import utils
 
-// Configuration presets
 pub fn small_test_config() -> SimulatorConfig {
   SimulatorConfig(
     num_users: 10,
@@ -46,86 +44,74 @@ pub fn default_config() -> SimulatorConfig {
   )
 }
 
-pub fn large_scale_config() -> SimulatorConfig {
-  SimulatorConfig(
-    num_users: 1000,
-    num_subreddits: 100,
-    simulation_duration_ms: 60_000,
-    zipf_alpha: 1.5,
-    connection_probability: 0.9,
-    post_probability: 0.02,
-    comment_probability: 0.08,
-    vote_probability: 0.15,
-    dm_probability: 0.005,
-    repost_probability: 0.03,
-  )
-}
-
 pub fn run_simulation(config: SimulatorConfig) -> Nil {
-  io.println("\n🚀 Starting Reddit Clone Simulation")
-  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  io.println("\n🚀 Starting Reddit Clone Simulation (Actor Model)")
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
   print_config(config)
 
   let start_time = utils.current_timestamp()
 
-  // Start the engine
-  io.println("\n⚙️  Starting engine...")
-  let engine_subject = reddit_engine.start()
+  io.println("\n⚙️  Starting engine actor...")
+  let assert Ok(engine_subject) = reddit_engine.start()
+  io.println("✓ Engine actor started successfully")
 
-  // Create subreddits
-  io.println("📁 Creating subreddits...")
+  // ✅ FIX: Register admin user FIRST and wait longer
+  io.println("\n👤 Registering admin user...")
+  process.send(engine_subject, RegisterUser("admin"))
+  utils.sleep(500)
+  // Wait for registration to complete
+  io.println("✓ Admin user registered")
+
+  io.println("\n📁 Creating subreddits...")
   let subreddit_names = create_subreddits(engine_subject, config.num_subreddits)
-
-  // Start client simulators
   io.println(
-    "👥 Starting " <> int.to_string(config.num_users) <> " client simulators...",
+    "✓ Created " <> int.to_string(list.length(subreddit_names)) <> " subreddits",
+  )
+
+  // ✅ Wait for subreddits to be fully created
+  utils.sleep(1000)
+
+  io.println(
+    "\n👥 Spawning " <> int.to_string(config.num_users) <> " client actors...",
   )
   let _clients = start_clients(engine_subject, config, subreddit_names)
+  io.println("✓ All client actors spawned")
 
-  // Run simulation
   io.println(
     "\n🎮 Simulation running for "
     <> utils.format_duration(config.simulation_duration_ms)
-    <> "...",
+    <> "...\n",
   )
 
-  // Periodically print stats
   print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
   print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
   print_periodic_stats(engine_subject, config.simulation_duration_ms / 3)
 
-  // Get final statistics
   let end_time = utils.current_timestamp()
   let duration = end_time - start_time
 
   io.println("\n📊 Final Statistics")
-  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
   print_final_stats(engine_subject)
 
   io.println("\n✅ Simulation completed in " <> utils.format_duration(duration))
-  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+  io.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
   Nil
 }
 
 fn print_config(config: SimulatorConfig) -> Nil {
-  io.println("📋 Configuration:")
+  io.println("\n📋 Configuration:")
   io.println("  • Users: " <> int.to_string(config.num_users))
   io.println("  • Subreddits: " <> int.to_string(config.num_subreddits))
   io.println(
     "  • Duration: " <> utils.format_duration(config.simulation_duration_ms),
   )
   io.println("  • Zipf α: " <> float.to_string(config.zipf_alpha))
-  io.println(
-    "  • Connection probability: "
-    <> float.to_string(config.connection_probability),
-  )
   io.println("  • Activity probabilities:")
   io.println("    - Post: " <> float.to_string(config.post_probability))
   io.println("    - Comment: " <> float.to_string(config.comment_probability))
   io.println("    - Vote: " <> float.to_string(config.vote_probability))
-  io.println("    - DM: " <> float.to_string(config.dm_probability))
-  io.println("    - Repost: " <> float.to_string(config.repost_probability))
 }
 
 fn create_subreddits(
@@ -135,29 +121,14 @@ fn create_subreddits(
   list.range(1, num_subreddits)
   |> list.map(fn(i) {
     let name = utils.random_subreddit_name() <> "_" <> int.to_string(i)
-    let response_subject = process.new_subject()
+    let desc = "A community for discussing " <> name
 
-    // Use a default admin user for creating subreddits
-    process.send(
-      engine_subject,
-      RegisterUser("admin_" <> int.to_string(i), response_subject),
-    )
+    // ✅ Now "admin" exists in the users dict!
+    process.send(engine_subject, CreateSubreddit("admin", name, desc))
 
-    case process.receive(response_subject, 1000) {
-      Ok(Success(UserRegistered(user_id))) -> {
-        let desc = "A community for discussing " <> name
-        process.send(
-          engine_subject,
-          CreateSubreddit(user_id, name, desc, response_subject),
-        )
-
-        case process.receive(response_subject, 1000) {
-          Ok(Success(SubredditCreated(subreddit_name))) -> subreddit_name
-          _ -> name
-        }
-      }
-      _ -> name
-    }
+    utils.sleep(100)
+    // Increased sleep time
+    name
   })
 }
 
@@ -168,6 +139,11 @@ fn start_clients(
 ) -> List(process.Subject(client_simulator.ClientControl)) {
   list.range(1, config.num_users)
   |> list.map(fn(i) {
+    // Small stagger to prevent overwhelming
+    case i % 20 {
+      0 -> utils.sleep(100)
+      _ -> Nil
+    }
     client_simulator.start_client(engine_subject, config, i, subreddits)
   })
 }
@@ -181,14 +157,23 @@ fn print_periodic_stats(
   let response_subject = process.new_subject()
   process.send(engine_subject, GetStats(response_subject))
 
-  case process.receive(response_subject, 1000) {
+  case process.receive(response_subject, 2000) {
     Ok(Success(StatsData(stats))) -> {
-      io.println("\n📈 Current Stats:")
+      io.println("📈 Current Stats:")
       io.println("  • Active users: " <> int.to_string(stats.active_sessions))
       io.println("  • Total posts: " <> int.to_string(stats.total_posts))
       io.println("  • Total comments: " <> int.to_string(stats.total_comments))
+      io.println(
+        "  • Total votes: "
+        <> int.to_string(stats.performance_metrics.total_votes_cast),
+      )
+      io.println(
+        "  • Messages processed: "
+        <> int.to_string(stats.performance_metrics.messages_processed),
+      )
+      io.println("")
     }
-    _ -> io.println("⚠️  Failed to get stats")
+    _ -> io.println("⚠️  Failed to get stats\n")
   }
 }
 
@@ -196,7 +181,7 @@ fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
   let response_subject = process.new_subject()
   process.send(engine_subject, GetStats(response_subject))
 
-  case process.receive(response_subject, 1000) {
+  case process.receive(response_subject, 2000) {
     Ok(Success(StatsData(stats))) -> {
       io.println("• Total users: " <> int.to_string(stats.total_users))
       io.println(
@@ -205,14 +190,39 @@ fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
       io.println("• Total posts: " <> int.to_string(stats.total_posts))
       io.println("• Total comments: " <> int.to_string(stats.total_comments))
       io.println("• Total messages: " <> int.to_string(stats.total_messages))
+      io.println(
+        "• Total votes: "
+        <> int.to_string(stats.performance_metrics.total_votes_cast),
+      )
       io.println("• Active sessions: " <> int.to_string(stats.active_sessions))
+      io.println(
+        "• Uptime: " <> int.to_string(stats.uptime_seconds) <> " seconds",
+      )
 
-      io.println("\n🏆 Most Popular Subreddits:")
-      list.take(stats.most_popular_subreddits, 5)
+      io.println("\n🏆 Most Popular Subreddits (Zipf Distribution):")
+      list.take(stats.most_popular_subreddits, 10)
       |> list.each(fn(pair) {
         let #(name, count) = pair
         io.println("  • " <> name <> ": " <> int.to_string(count) <> " members")
       })
+
+      io.println("\n⚡ Performance Metrics:")
+      io.println(
+        "  • Posts created: "
+        <> int.to_string(stats.performance_metrics.total_posts_created),
+      )
+      io.println(
+        "  • Comments created: "
+        <> int.to_string(stats.performance_metrics.total_comments_created),
+      )
+      io.println(
+        "  • Votes cast: "
+        <> int.to_string(stats.performance_metrics.total_votes_cast),
+      )
+      io.println(
+        "  • Messages processed: "
+        <> int.to_string(stats.performance_metrics.messages_processed),
+      )
     }
     _ -> io.println("⚠️  Failed to get final stats")
   }

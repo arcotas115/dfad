@@ -1,134 +1,163 @@
-// src/engine.gleam
-// Main Reddit engine that handles all operations
+// src/reddit_engine.gleam
+// Reddit engine using proper OTP actor model
 
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/io
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option
+import gleam/otp/actor
 import types.{
-  type ClientMessage, type CommentId, type EngineMessage, type EngineResponse,
-  type EngineState, type MessageId, type PostId, type SubredditName, type User,
-  type UserId, type Vote, Comment, CommentCreated, CommentsData, CreateComment,
-  CreatePost, CreateRepost, CreateSubreddit, DirectMessage, Downvote,
-  EngineError, EngineState, EngineStats, FeedData, GetComments, GetFeed,
-  GetMessages, GetPost, GetStats, GetSubredditFeed, GetUserKarma, JoinSubreddit,
-  JoinedSubreddit, KarmaData, LeaveSubreddit, LeftSubreddit, LoginUser,
-  LogoutUser, MessageSent, MessagesData, NewComment, NewDirectMessage, NewPost,
-  Post, PostCreated, PostData, PostVoteUpdate, RegisterUser, SendDirectMessage,
-  StatsData, Subreddit, SubredditCreated, Success, Upvote, User, UserRegistered,
-  VoteCast, VoteComment, VotePost,
+  type EngineState, type SubredditName, type UserId, type Vote, Downvote,
+  EngineState, Post, Subreddit, Upvote, User,
 }
 import utils
 
-pub fn start() -> Subject(EngineMessage) {
-  let subject = process.new_subject()
+// Start the Reddit engine actor
+pub fn start() -> Result(Subject(types.EngineMessage), actor.StartError) {
+  let result =
+    actor.new_with_initialiser(1000, fn(self_subject) {
+      // Initialize state
+      let state =
+        EngineState(
+          users: dict.new(),
+          subreddits: dict.new(),
+          posts: dict.new(),
+          comments: dict.new(),
+          messages: dict.new(),
+          user_votes: dict.new(),
+          user_sessions: dict.new(),
+          next_post_id: 1,
+          next_comment_id: 1,
+          next_message_id: 1,
+          metrics: types.PerformanceMetrics(
+            total_posts_created: 0,
+            total_comments_created: 0,
+            total_votes_cast: 0,
+            total_messages_sent: 0,
+            messages_processed: 0,
+          ),
+          start_time: utils.current_timestamp(),
+        )
 
-  process.spawn_unlinked(fn() {
-    let initial_state =
-      EngineState(
-        users: dict.new(),
-        subreddits: dict.new(),
-        posts: dict.new(),
-        comments: dict.new(),
-        messages: dict.new(),
-        user_votes: dict.new(),
-        user_sessions: dict.new(),
-        next_post_id: 1,
-        next_comment_id: 1,
-        next_message_id: 1,
-      )
-    loop(subject, initial_state)
-  })
+      state
+      |> actor.initialised
+      |> actor.returning(self_subject)
+      |> Ok
+    })
+    |> actor.on_message(handle_message)
+    |> actor.start
 
-  subject
-}
-
-fn loop(subject: Subject(EngineMessage), state: EngineState) -> Nil {
-  let message = process.receive_forever(subject)
-  let new_state = handle_message(message, state)
-  loop(subject, new_state)
-}
-
-fn handle_message(message: EngineMessage, state: EngineState) -> EngineState {
-  case message {
-    RegisterUser(username, reply_to) ->
-      handle_register_user(username, reply_to, state)
-    LoginUser(user_id, session) -> handle_login_user(user_id, session, state)
-    LogoutUser(user_id) -> handle_logout_user(user_id, state)
-    CreateSubreddit(user_id, name, description, reply_to) ->
-      handle_create_subreddit(user_id, name, description, reply_to, state)
-    JoinSubreddit(user_id, subreddit, reply_to) ->
-      handle_join_subreddit(user_id, subreddit, reply_to, state)
-    LeaveSubreddit(user_id, subreddit, reply_to) ->
-      handle_leave_subreddit(user_id, subreddit, reply_to, state)
-    CreatePost(user_id, subreddit, title, content, reply_to) ->
-      handle_create_post(user_id, subreddit, title, content, reply_to, state)
-    CreateRepost(user_id, original_post_id, subreddit, reply_to) ->
-      handle_create_repost(
-        user_id,
-        original_post_id,
-        subreddit,
-        reply_to,
-        state,
-      )
-    VotePost(user_id, post_id, vote, reply_to) ->
-      handle_vote_post(user_id, post_id, vote, reply_to, state)
-    CreateComment(user_id, post_id, parent_id, content, reply_to) ->
-      handle_create_comment(
-        user_id,
-        post_id,
-        parent_id,
-        content,
-        reply_to,
-        state,
-      )
-    VoteComment(user_id, comment_id, vote, reply_to) ->
-      handle_vote_comment(user_id, comment_id, vote, reply_to, state)
-    GetFeed(user_id, limit, reply_to) ->
-      handle_get_feed(user_id, limit, reply_to, state)
-    GetSubredditFeed(subreddit, limit, reply_to) ->
-      handle_get_subreddit_feed(subreddit, limit, reply_to, state)
-    GetPost(post_id, reply_to) -> handle_get_post(post_id, reply_to, state)
-    GetComments(post_id, reply_to) ->
-      handle_get_comments(post_id, reply_to, state)
-    SendDirectMessage(sender, recipient, content, reply_msg_id, reply_to) ->
-      handle_send_dm(sender, recipient, content, reply_msg_id, reply_to, state)
-    GetMessages(user_id, reply_to) ->
-      handle_get_messages(user_id, reply_to, state)
-    GetStats(reply_to) -> handle_get_stats(reply_to, state)
-    GetUserKarma(user_id, reply_to) ->
-      handle_get_user_karma(user_id, reply_to, state)
+  // Extract the subject from actor.Started
+  case result {
+    Ok(actor_started) -> Ok(actor_started.data)
+    Error(e) -> Error(e)
   }
 }
 
-fn handle_register_user(
-  username: String,
-  reply_to: Subject(EngineResponse),
+// Message handler - STATE FIRST, MESSAGE SECOND!
+fn handle_message(
   state: EngineState,
-) -> EngineState {
-  let user_id = utils.generate_id("user")
+  message: types.EngineMessage,
+) -> actor.Next(EngineState, types.EngineMessage) {
+  // Update metrics
+  let updated_metrics =
+    types.PerformanceMetrics(
+      ..state.metrics,
+      messages_processed: state.metrics.messages_processed + 1,
+    )
+  let state = EngineState(..state, metrics: updated_metrics)
+
+  // Route messages to handlers
+  let new_state = case message {
+    types.RegisterUser(username) -> handle_register_user(username, state)
+    types.LoginUser(user_id, session) ->
+      handle_login_user(user_id, session, state)
+    types.LogoutUser(user_id) -> handle_logout_user(user_id, state)
+    types.CreateSubreddit(user_id, name, description) ->
+      handle_create_subreddit(user_id, name, description, state)
+    types.JoinSubreddit(user_id, subreddit) ->
+      handle_join_subreddit(user_id, subreddit, state)
+    types.LeaveSubreddit(user_id, subreddit) ->
+      handle_leave_subreddit(user_id, subreddit, state)
+    types.CreatePost(user_id, subreddit, title, content) ->
+      handle_create_post(user_id, subreddit, title, content, state)
+    types.CreateRepost(user_id, original_post_id, subreddit) ->
+      handle_create_repost(user_id, original_post_id, subreddit, state)
+    types.VotePost(user_id, post_id, vote) ->
+      handle_vote_post(user_id, post_id, vote, state)
+    types.CreateComment(user_id, post_id, parent_id, content) ->
+      handle_create_comment(user_id, post_id, parent_id, content, state)
+    types.VoteComment(user_id, comment_id, vote) ->
+      handle_vote_comment(user_id, comment_id, vote, state)
+    types.GetFeed(user_id, limit, reply_to) -> {
+      handle_get_feed(user_id, limit, reply_to, state)
+      state
+    }
+    types.GetSubredditFeed(subreddit, limit, reply_to) -> {
+      handle_get_subreddit_feed(subreddit, limit, reply_to, state)
+      state
+    }
+    types.GetPost(post_id, reply_to) -> {
+      handle_get_post(post_id, reply_to, state)
+      state
+    }
+    types.GetComments(post_id, reply_to) -> {
+      handle_get_comments(post_id, reply_to, state)
+      state
+    }
+    types.SendDirectMessage(sender, recipient, content, reply_msg_id) ->
+      handle_send_dm(sender, recipient, content, reply_msg_id, state)
+    types.GetMessages(user_id, reply_to) -> {
+      handle_get_messages(user_id, reply_to, state)
+      state
+    }
+    types.GetStats(reply_to) -> {
+      handle_get_stats(reply_to, state)
+      state
+    }
+    types.GetUserKarma(user_id, reply_to) -> {
+      handle_get_user_karma(user_id, reply_to, state)
+      state
+    }
+  }
+
+  actor.continue(new_state)
+}
+
+// Handler functions
+
+fn handle_register_user(username: String, state: EngineState) -> EngineState {
+  // ✅ FIX: Use username as user_id (not generate_id)
+  let user_id = username
   let timestamp = utils.current_timestamp()
 
-  let user =
-    User(
-      id: user_id,
-      username: username,
-      karma: 0,
-      joined_subreddits: [],
-      created_at: timestamp,
-    )
+  case dict.has_key(state.users, user_id) {
+    True -> {
+      io.println("⚠ User " <> username <> " already exists")
+      state
+    }
+    False -> {
+      let user =
+        User(
+          id: user_id,
+          username: username,
+          karma: 0,
+          joined_subreddits: [],
+          created_at: timestamp,
+        )
 
-  let new_users = dict.insert(state.users, user_id, user)
-  let new_state = EngineState(..state, users: new_users)
-
-  process.send(reply_to, Success(UserRegistered(user_id)))
-  new_state
+      let new_users = dict.insert(state.users, user_id, user)
+      io.println("✓ Registered user: " <> username)
+      EngineState(..state, users: new_users)
+    }
+  }
 }
 
 fn handle_login_user(
   user_id: UserId,
-  session: Subject(ClientMessage),
+  session: Subject(types.ClientMessage),
   state: EngineState,
 ) -> EngineState {
   let new_sessions = dict.insert(state.user_sessions, user_id, session)
@@ -144,14 +173,13 @@ fn handle_create_subreddit(
   user_id: UserId,
   name: String,
   description: String,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case dict.get(state.users, user_id) {
     Ok(_user) -> {
       case dict.get(state.subreddits, name) {
         Ok(_) -> {
-          process.send(reply_to, EngineError("Subreddit already exists"))
+          io.println("⚠ Subreddit r/" <> name <> " already exists")
           state
         }
         Error(_) -> {
@@ -177,16 +205,13 @@ fn handle_create_subreddit(
             Error(_) -> state.users
           }
 
-          let new_state =
-            EngineState(..state, subreddits: new_subreddits, users: new_users)
-
-          process.send(reply_to, Success(SubredditCreated(name)))
-          new_state
+          io.println("✓ Created subreddit: r/" <> name)
+          EngineState(..state, subreddits: new_subreddits, users: new_users)
         }
       }
     }
     Error(_) -> {
-      process.send(reply_to, EngineError("User not found"))
+      io.println("⚠ User not found for subreddit creation")
       state
     }
   }
@@ -195,7 +220,6 @@ fn handle_create_subreddit(
 fn handle_join_subreddit(
   user_id: UserId,
   subreddit_name: SubredditName,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case
@@ -204,10 +228,7 @@ fn handle_join_subreddit(
   {
     Ok(user), Ok(subreddit) -> {
       case list.contains(subreddit.members, user_id) {
-        True -> {
-          process.send(reply_to, EngineError("Already a member"))
-          state
-        }
+        True -> state
         False -> {
           let updated_subreddit =
             Subreddit(..subreddit, members: [user_id, ..subreddit.members])
@@ -217,33 +238,25 @@ fn handle_join_subreddit(
               ..user.joined_subreddits
             ])
 
-          let new_state =
-            EngineState(
-              ..state,
-              subreddits: dict.insert(
-                state.subreddits,
-                subreddit_name,
-                updated_subreddit,
-              ),
-              users: dict.insert(state.users, user_id, updated_user),
-            )
-
-          process.send(reply_to, Success(JoinedSubreddit(subreddit_name)))
-          new_state
+          EngineState(
+            ..state,
+            subreddits: dict.insert(
+              state.subreddits,
+              subreddit_name,
+              updated_subreddit,
+            ),
+            users: dict.insert(state.users, user_id, updated_user),
+          )
         }
       }
     }
-    _, _ -> {
-      process.send(reply_to, EngineError("User or subreddit not found"))
-      state
-    }
+    _, _ -> state
   }
 }
 
 fn handle_leave_subreddit(
   user_id: UserId,
   subreddit_name: SubredditName,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case
@@ -264,24 +277,17 @@ fn handle_leave_subreddit(
           }),
         )
 
-      let new_state =
-        EngineState(
-          ..state,
-          subreddits: dict.insert(
-            state.subreddits,
-            subreddit_name,
-            updated_subreddit,
-          ),
-          users: dict.insert(state.users, user_id, updated_user),
-        )
-
-      process.send(reply_to, Success(LeftSubreddit(subreddit_name)))
-      new_state
+      EngineState(
+        ..state,
+        subreddits: dict.insert(
+          state.subreddits,
+          subreddit_name,
+          updated_subreddit,
+        ),
+        users: dict.insert(state.users, user_id, updated_user),
+      )
     }
-    _, _ -> {
-      process.send(reply_to, EngineError("User or subreddit not found"))
-      state
-    }
+    _, _ -> state
   }
 }
 
@@ -290,7 +296,6 @@ fn handle_create_post(
   subreddit: SubredditName,
   title: String,
   content: String,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case dict.get(state.subreddits, subreddit) {
@@ -311,7 +316,7 @@ fn handle_create_post(
               downvotes: 0,
               created_at: timestamp,
               is_repost: False,
-              original_post_id: None,
+              original_post_id: option.None,
             )
 
           let new_posts = dict.insert(state.posts, post_id, post)
@@ -323,38 +328,35 @@ fn handle_create_post(
           let new_subreddits =
             dict.insert(state.subreddits, subreddit, updated_sub)
 
-          let new_state =
-            EngineState(
-              ..state,
-              posts: new_posts,
-              user_votes: new_votes,
-              subreddits: new_subreddits,
-              next_post_id: state.next_post_id + 1,
-            )
+          broadcast_to_subreddit_members(
+            sub.members,
+            types.NewPost(post),
+            state,
+          )
 
-          broadcast_to_subreddit_members(sub.members, NewPost(post), state)
-
-          process.send(reply_to, Success(PostCreated(post_id)))
-          new_state
+          EngineState(
+            ..state,
+            posts: new_posts,
+            user_votes: new_votes,
+            subreddits: new_subreddits,
+            next_post_id: state.next_post_id + 1,
+            metrics: types.PerformanceMetrics(
+              ..state.metrics,
+              total_posts_created: state.metrics.total_posts_created + 1,
+            ),
+          )
         }
-        False -> {
-          process.send(reply_to, EngineError("Not a member of this subreddit"))
-          state
-        }
+        False -> state
       }
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("Subreddit not found"))
-      state
-    }
+    Error(_) -> state
   }
 }
 
 fn handle_create_repost(
   user_id: UserId,
-  original_post_id: PostId,
+  original_post_id: types.PostId,
   subreddit: SubredditName,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case
@@ -378,7 +380,7 @@ fn handle_create_repost(
               downvotes: 0,
               created_at: timestamp,
               is_repost: True,
-              original_post_id: Some(original_post_id),
+              original_post_id: option.Some(original_post_id),
             )
 
           let new_posts = dict.insert(state.posts, post_id, post)
@@ -389,41 +391,35 @@ fn handle_create_repost(
           let new_subreddits =
             dict.insert(state.subreddits, subreddit, updated_sub)
 
-          let new_state =
-            EngineState(
-              ..state,
-              posts: new_posts,
-              user_votes: new_votes,
-              subreddits: new_subreddits,
-              next_post_id: state.next_post_id + 1,
-            )
+          broadcast_to_subreddit_members(
+            sub.members,
+            types.NewPost(post),
+            state,
+          )
 
-          broadcast_to_subreddit_members(sub.members, NewPost(post), state)
-
-          process.send(reply_to, Success(PostCreated(post_id)))
-          new_state
+          EngineState(
+            ..state,
+            posts: new_posts,
+            user_votes: new_votes,
+            subreddits: new_subreddits,
+            next_post_id: state.next_post_id + 1,
+            metrics: types.PerformanceMetrics(
+              ..state.metrics,
+              total_posts_created: state.metrics.total_posts_created + 1,
+            ),
+          )
         }
-        False -> {
-          process.send(reply_to, EngineError("Not a member of this subreddit"))
-          state
-        }
+        False -> state
       }
     }
-    _, _ -> {
-      process.send(
-        reply_to,
-        EngineError("Original post or subreddit not found"),
-      )
-      state
-    }
+    _, _ -> state
   }
 }
 
 fn handle_vote_post(
   user_id: UserId,
-  post_id: PostId,
+  post_id: types.PostId,
   vote: Vote,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case dict.get(state.posts, post_id) {
@@ -436,7 +432,7 @@ fn handle_vote_post(
           post.upvotes,
           post.downvotes,
           previous_vote,
-          Some(vote),
+          option.Some(vote),
         )
 
       let updated_post =
@@ -451,40 +447,36 @@ fn handle_vote_post(
           new_upvotes - new_downvotes - post.upvotes + post.downvotes,
         )
 
-      let new_state =
-        EngineState(
-          ..state,
-          posts: new_posts,
-          user_votes: new_votes,
-          users: new_users,
-        )
-
       case dict.get(state.subreddits, post.subreddit) {
         Ok(sub) ->
           broadcast_to_subreddit_members(
             sub.members,
-            PostVoteUpdate(post_id, new_upvotes, new_downvotes),
+            types.PostVoteUpdate(post_id, new_upvotes, new_downvotes),
             state,
           )
         Error(_) -> Nil
       }
 
-      process.send(reply_to, Success(VoteCast))
-      new_state
+      EngineState(
+        ..state,
+        posts: new_posts,
+        user_votes: new_votes,
+        users: new_users,
+        metrics: types.PerformanceMetrics(
+          ..state.metrics,
+          total_votes_cast: state.metrics.total_votes_cast + 1,
+        ),
+      )
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("Post not found"))
-      state
-    }
+    Error(_) -> state
   }
 }
 
 fn handle_create_comment(
   user_id: UserId,
-  post_id: PostId,
-  parent_id: Option(CommentId),
+  post_id: types.PostId,
+  parent_id: option.Option(types.CommentId),
   content: String,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case dict.get(state.posts, post_id) {
@@ -493,7 +485,7 @@ fn handle_create_comment(
       let timestamp = utils.current_timestamp()
 
       let comment =
-        Comment(
+        types.Comment(
           id: comment_id,
           post_id: post_id,
           parent_id: parent_id,
@@ -511,11 +503,11 @@ fn handle_create_comment(
       let new_votes = dict.insert(state.user_votes, vote_key, Upvote)
 
       let updated_comments = case parent_id {
-        Some(pid) -> {
+        option.Some(pid) -> {
           case dict.get(new_comments, pid) {
             Ok(parent_comment) -> {
               let updated_parent =
-                Comment(..parent_comment, replies: [
+                types.Comment(..parent_comment, replies: [
                   comment_id,
                   ..parent_comment.replies
                 ])
@@ -524,42 +516,38 @@ fn handle_create_comment(
             Error(_) -> new_comments
           }
         }
-        None -> new_comments
+        option.None -> new_comments
       }
-
-      let new_state =
-        EngineState(
-          ..state,
-          comments: updated_comments,
-          user_votes: new_votes,
-          next_comment_id: state.next_comment_id + 1,
-        )
 
       case dict.get(state.subreddits, post.subreddit) {
         Ok(sub) ->
           broadcast_to_subreddit_members(
             sub.members,
-            NewComment(comment),
+            types.NewComment(comment),
             state,
           )
         Error(_) -> Nil
       }
 
-      process.send(reply_to, Success(CommentCreated(comment_id)))
-      new_state
+      EngineState(
+        ..state,
+        comments: updated_comments,
+        user_votes: new_votes,
+        next_comment_id: state.next_comment_id + 1,
+        metrics: types.PerformanceMetrics(
+          ..state.metrics,
+          total_comments_created: state.metrics.total_comments_created + 1,
+        ),
+      )
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("Post not found"))
-      state
-    }
+    Error(_) -> state
   }
 }
 
 fn handle_vote_comment(
   user_id: UserId,
-  comment_id: CommentId,
+  comment_id: types.CommentId,
   vote: Vote,
-  reply_to: Subject(EngineResponse),
   state: EngineState,
 ) -> EngineState {
   case dict.get(state.comments, comment_id) {
@@ -572,11 +560,11 @@ fn handle_vote_comment(
           comment.upvotes,
           comment.downvotes,
           previous_vote,
-          Some(vote),
+          option.Some(vote),
         )
 
       let updated_comment =
-        Comment(..comment, upvotes: new_upvotes, downvotes: new_downvotes)
+        types.Comment(..comment, upvotes: new_upvotes, downvotes: new_downvotes)
       let new_comments =
         dict.insert(state.comments, comment_id, updated_comment)
       let new_votes = dict.insert(state.user_votes, vote_key, vote)
@@ -588,30 +576,27 @@ fn handle_vote_comment(
           new_upvotes - new_downvotes - comment.upvotes + comment.downvotes,
         )
 
-      let new_state =
-        EngineState(
-          ..state,
-          comments: new_comments,
-          user_votes: new_votes,
-          users: new_users,
-        )
-
-      process.send(reply_to, Success(VoteCast))
-      new_state
+      EngineState(
+        ..state,
+        comments: new_comments,
+        user_votes: new_votes,
+        users: new_users,
+        metrics: types.PerformanceMetrics(
+          ..state.metrics,
+          total_votes_cast: state.metrics.total_votes_cast + 1,
+        ),
+      )
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("Comment not found"))
-      state
-    }
+    Error(_) -> state
   }
 }
 
 fn handle_get_feed(
   user_id: UserId,
   limit: Int,
-  reply_to: Subject(EngineResponse),
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   case dict.get(state.users, user_id) {
     Ok(user) -> {
       let posts =
@@ -623,22 +608,18 @@ fn handle_get_feed(
         |> list.sort(fn(a, b) { int.compare(b.created_at, a.created_at) })
         |> list.take(limit)
 
-      process.send(reply_to, Success(FeedData(posts)))
-      state
+      process.send(reply_to, types.Success(types.FeedData(posts)))
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("User not found"))
-      state
-    }
+    Error(_) -> process.send(reply_to, types.EngineError("User not found"))
   }
 }
 
 fn handle_get_subreddit_feed(
   subreddit: SubredditName,
   limit: Int,
-  reply_to: Subject(EngineResponse),
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   let posts =
     state.posts
     |> dict.values
@@ -646,59 +627,54 @@ fn handle_get_subreddit_feed(
     |> list.sort(fn(a, b) { int.compare(b.created_at, a.created_at) })
     |> list.take(limit)
 
-  process.send(reply_to, Success(FeedData(posts)))
-  state
+  process.send(reply_to, types.Success(types.FeedData(posts)))
 }
 
 fn handle_get_post(
-  post_id: PostId,
-  reply_to: Subject(EngineResponse),
+  post_id: types.PostId,
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   case dict.get(state.posts, post_id) {
     Ok(post) -> {
       let comments =
         state.comments
         |> dict.values
-        |> list.filter(fn(c) { c.post_id == post_id && c.parent_id == None })
+        |> list.filter(fn(c) {
+          c.post_id == post_id && c.parent_id == option.None
+        })
 
-      process.send(reply_to, Success(PostData(post, comments)))
-      state
+      process.send(reply_to, types.Success(types.PostData(post, comments)))
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("Post not found"))
-      state
-    }
+    Error(_) -> process.send(reply_to, types.EngineError("Post not found"))
   }
 }
 
 fn handle_get_comments(
-  post_id: PostId,
-  reply_to: Subject(EngineResponse),
+  post_id: types.PostId,
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   let comments =
     state.comments
     |> dict.values
     |> list.filter(fn(c) { c.post_id == post_id })
 
-  process.send(reply_to, Success(CommentsData(comments)))
-  state
+  process.send(reply_to, types.Success(types.CommentsData(comments)))
 }
 
 fn handle_send_dm(
   sender: UserId,
   recipient: UserId,
   content: String,
-  reply_msg_id: Option(MessageId),
-  reply_to: Subject(EngineResponse),
+  reply_msg_id: option.Option(types.MessageId),
   state: EngineState,
 ) -> EngineState {
   let message_id = "msg_" <> int.to_string(state.next_message_id)
   let timestamp = utils.current_timestamp()
 
   let message =
-    DirectMessage(
+    types.DirectMessage(
       id: message_id,
       sender: sender,
       recipient: recipient,
@@ -709,41 +685,41 @@ fn handle_send_dm(
     )
 
   let new_messages = dict.insert(state.messages, message_id, message)
-  let new_state =
-    EngineState(
-      ..state,
-      messages: new_messages,
-      next_message_id: state.next_message_id + 1,
-    )
 
   case dict.get(state.user_sessions, recipient) {
-    Ok(session) -> process.send(session, NewDirectMessage(message))
+    Ok(session) -> process.send(session, types.NewDirectMessage(message))
     Error(_) -> Nil
   }
 
-  process.send(reply_to, Success(MessageSent(message_id)))
-  new_state
+  EngineState(
+    ..state,
+    messages: new_messages,
+    next_message_id: state.next_message_id + 1,
+    metrics: types.PerformanceMetrics(
+      ..state.metrics,
+      total_messages_sent: state.metrics.total_messages_sent + 1,
+    ),
+  )
 }
 
 fn handle_get_messages(
   user_id: UserId,
-  reply_to: Subject(EngineResponse),
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   let messages =
     state.messages
     |> dict.values
     |> list.filter(fn(m) { m.recipient == user_id || m.sender == user_id })
     |> list.sort(fn(a, b) { int.compare(b.created_at, a.created_at) })
 
-  process.send(reply_to, Success(MessagesData(messages)))
-  state
+  process.send(reply_to, types.Success(types.MessagesData(messages)))
 }
 
 fn handle_get_stats(
-  reply_to: Subject(EngineResponse),
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   let popular_subreddits =
     state.subreddits
     |> dict.values
@@ -751,8 +727,11 @@ fn handle_get_stats(
     |> list.sort(fn(a, b) { int.compare(b.1, a.1) })
     |> list.take(10)
 
+  let uptime = utils.current_timestamp() - state.start_time
+  let uptime_seconds = uptime / 1000
+
   let stats =
-    EngineStats(
+    types.EngineStats(
       total_users: dict.size(state.users),
       total_subreddits: dict.size(state.subreddits),
       total_posts: dict.size(state.posts),
@@ -760,26 +739,23 @@ fn handle_get_stats(
       total_messages: dict.size(state.messages),
       active_sessions: dict.size(state.user_sessions),
       most_popular_subreddits: popular_subreddits,
+      performance_metrics: state.metrics,
+      uptime_seconds: uptime_seconds,
     )
 
-  process.send(reply_to, Success(StatsData(stats)))
-  state
+  process.send(reply_to, types.Success(types.StatsData(stats)))
 }
 
 fn handle_get_user_karma(
   user_id: UserId,
-  reply_to: Subject(EngineResponse),
+  reply_to: Subject(types.EngineResponse),
   state: EngineState,
-) -> EngineState {
+) -> Nil {
   case dict.get(state.users, user_id) {
     Ok(user) -> {
-      process.send(reply_to, Success(KarmaData(user.karma)))
-      state
+      process.send(reply_to, types.Success(types.KarmaData(user.karma)))
     }
-    Error(_) -> {
-      process.send(reply_to, EngineError("User not found"))
-      state
-    }
+    Error(_) -> process.send(reply_to, types.EngineError("User not found"))
   }
 }
 
@@ -788,22 +764,22 @@ fn update_vote_counts(
   upvotes: Int,
   downvotes: Int,
   previous: Result(Vote, Nil),
-  new: Option(Vote),
+  new: option.Option(Vote),
 ) -> #(Int, Int) {
   case previous, new {
-    Ok(Upvote), Some(Downvote) -> #(upvotes - 1, downvotes + 1)
-    Ok(Downvote), Some(Upvote) -> #(upvotes + 1, downvotes - 1)
-    Error(_), Some(Upvote) -> #(upvotes + 1, downvotes)
-    Error(_), Some(Downvote) -> #(upvotes, downvotes + 1)
+    Ok(Upvote), option.Some(Downvote) -> #(upvotes - 1, downvotes + 1)
+    Ok(Downvote), option.Some(Upvote) -> #(upvotes + 1, downvotes - 1)
+    Error(_), option.Some(Upvote) -> #(upvotes + 1, downvotes)
+    Error(_), option.Some(Downvote) -> #(upvotes, downvotes + 1)
     _, _ -> #(upvotes, downvotes)
   }
 }
 
 fn update_user_karma(
-  users: dict.Dict(UserId, User),
+  users: dict.Dict(UserId, types.User),
   user_id: UserId,
   karma_change: Int,
-) -> dict.Dict(UserId, User) {
+) -> dict.Dict(UserId, types.User) {
   case dict.get(users, user_id) {
     Ok(user) -> {
       let updated_user = User(..user, karma: user.karma + karma_change)
@@ -815,7 +791,7 @@ fn update_user_karma(
 
 fn broadcast_to_subreddit_members(
   members: List(UserId),
-  message: ClientMessage,
+  message: types.ClientMessage,
   state: EngineState,
 ) -> Nil {
   list.each(members, fn(member_id) {
