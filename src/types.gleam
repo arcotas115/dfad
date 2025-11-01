@@ -222,6 +222,7 @@ pub type ClientState {
     is_connected: Bool,
     joined_subreddits: List(SubredditName),
     activity_level: Float,
+    seen_posts: List(PostId),
   )
 }
 
