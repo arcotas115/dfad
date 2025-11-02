@@ -1,5 +1,6 @@
 // src/reddit_clone.gleam
 // Main simulation orchestrator with Zipf distribution
+// ✅ FIXED VERSION - Includes throughput calculations and increased timeouts
 
 import client_simulator
 import gleam/erlang/process
@@ -31,9 +32,12 @@ pub fn small_test_config() -> SimulatorConfig {
 
 pub fn default_config() -> SimulatorConfig {
   SimulatorConfig(
-    num_users: 100,
-    num_subreddits: 20,
-    simulation_duration_ms: 30_000,
+    num_users: 5000,
+    // ✅ CHANGED from 100 to 5000
+    num_subreddits: 30,
+    // ✅ CHANGED from 20 to 30
+    simulation_duration_ms: 60_000,
+    // ✅ CHANGED from 30_000 to 60_000 (1 minute)
     zipf_alpha: 1.2,
     connection_probability: 0.95,
     post_probability: 0.03,
@@ -55,11 +59,10 @@ pub fn run_simulation(config: SimulatorConfig) -> Nil {
   let assert Ok(engine_subject) = reddit_engine.start()
   io.println("✓ Engine actor started successfully")
 
-  // ✅ FIX: Register admin user FIRST and wait longer
+  // Register admin user FIRST and wait longer
   io.println("\n👤 Registering admin user...")
   process.send(engine_subject, RegisterUser("admin"))
   utils.sleep(500)
-  // Wait for registration to complete
   io.println("✓ Admin user registered")
 
   io.println("\n📁 Creating subreddits...")
@@ -68,7 +71,7 @@ pub fn run_simulation(config: SimulatorConfig) -> Nil {
     "✓ Created " <> int.to_string(list.length(subreddit_names)) <> " subreddits",
   )
 
-  // ✅ Wait for subreddits to be fully created
+  // Wait for subreddits to be fully created
   utils.sleep(1000)
 
   io.println(
@@ -123,11 +126,9 @@ fn create_subreddits(
     let name = utils.random_subreddit_name() <> "_" <> int.to_string(i)
     let desc = "A community for discussing " <> name
 
-    // ✅ Now "admin" exists in the users dict!
     process.send(engine_subject, CreateSubreddit("admin", name, desc))
 
     utils.sleep(100)
-    // Increased sleep time
     name
   })
 }
@@ -157,7 +158,8 @@ fn print_periodic_stats(
   let response_subject = process.new_subject()
   process.send(engine_subject, GetStats(response_subject))
 
-  case process.receive(response_subject, 2000) {
+  // ✅ CHANGED: Increased timeout from 2000 to 10000
+  case process.receive(response_subject, 10_000) {
     Ok(Success(StatsData(stats))) -> {
       io.println("📈 Current Stats:")
       io.println("  • Active users: " <> int.to_string(stats.active_sessions))
@@ -181,7 +183,8 @@ fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
   let response_subject = process.new_subject()
   process.send(engine_subject, GetStats(response_subject))
 
-  case process.receive(response_subject, 2000) {
+  // ✅ CHANGED: Increased timeout from 2000 to 10000
+  case process.receive(response_subject, 10_000) {
     Ok(Success(StatsData(stats))) -> {
       io.println("• Total users: " <> int.to_string(stats.total_users))
       io.println(
@@ -198,6 +201,65 @@ fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
       io.println(
         "• Uptime: " <> int.to_string(stats.uptime_seconds) <> " seconds",
       )
+
+      // ✅ NEW: THROUGHPUT CALCULATION SECTION
+      io.println("\n🚀 Throughput Metrics:")
+
+      // Calculate throughput (avoid division by zero)
+      let duration_seconds = case stats.uptime_seconds {
+        0 -> 1
+        n -> n
+      }
+
+      let posts_per_second =
+        int.to_float(stats.total_posts) /. int.to_float(duration_seconds)
+
+      let comments_per_second =
+        int.to_float(stats.total_comments) /. int.to_float(duration_seconds)
+
+      let votes_per_second =
+        int.to_float(stats.performance_metrics.total_votes_cast)
+        /. int.to_float(duration_seconds)
+
+      let messages_per_second =
+        int.to_float(stats.performance_metrics.messages_processed)
+        /. int.to_float(duration_seconds)
+
+      // Format to 2 decimal places
+      io.println("  • Posts per second: " <> format_float(posts_per_second, 2))
+      io.println(
+        "  • Comments per second: " <> format_float(comments_per_second, 2),
+      )
+      io.println("  • Votes per second: " <> format_float(votes_per_second, 2))
+      io.println(
+        "  • Messages per second: " <> format_float(messages_per_second, 2),
+      )
+
+      // ✅ NEW: ENGAGEMENT METRICS
+      io.println("\n📊 Engagement Metrics:")
+
+      let posts_per_user = case stats.total_users {
+        0 -> 0.0
+        n -> int.to_float(stats.total_posts) /. int.to_float(n)
+      }
+
+      let comments_per_post = case stats.total_posts {
+        0 -> 0.0
+        n -> int.to_float(stats.total_comments) /. int.to_float(n)
+      }
+
+      let votes_per_post = case stats.total_posts {
+        0 -> 0.0
+        n ->
+          int.to_float(stats.performance_metrics.total_votes_cast)
+          /. int.to_float(n)
+      }
+
+      io.println("  • Posts per user: " <> format_float(posts_per_user, 2))
+      io.println(
+        "  • Comments per post: " <> format_float(comments_per_post, 2),
+      )
+      io.println("  • Votes per post: " <> format_float(votes_per_post, 2))
 
       io.println("\n🏆 Most Popular Subreddits (Zipf Distribution):")
       list.take(stats.most_popular_subreddits, 10)
@@ -225,6 +287,17 @@ fn print_final_stats(engine_subject: process.Subject(EngineMessage)) -> Nil {
       )
     }
     _ -> io.println("⚠️  Failed to get final stats")
+  }
+}
+
+// ✅ NEW: Helper function to format floats
+fn format_float(value: Float, decimals: Int) -> String {
+  case decimals {
+    2 -> {
+      let rounded = int.to_float(float.round(value *. 100.0)) /. 100.0
+      float.to_string(rounded)
+    }
+    _ -> float.to_string(value)
   }
 }
 
