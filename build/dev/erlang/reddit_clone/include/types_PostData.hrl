@@ -1,0 +1,1 @@
+-record(post_data, {post :: types:post(), comments :: list(types:comment())}).

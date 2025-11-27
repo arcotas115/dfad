@@ -1,0 +1,1 @@
+-record(api_join_subreddit, {user_id :: binary(), subreddit :: binary()}).

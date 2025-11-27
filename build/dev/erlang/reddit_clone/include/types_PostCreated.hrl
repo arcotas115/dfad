@@ -1,0 +1,1 @@
+-record(post_created, {post_id :: binary()}).

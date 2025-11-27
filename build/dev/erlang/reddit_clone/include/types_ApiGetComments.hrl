@@ -1,0 +1,1 @@
+-record(api_get_comments, {post_id :: binary()}).

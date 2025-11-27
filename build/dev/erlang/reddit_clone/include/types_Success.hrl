@@ -1,0 +1,1 @@
+-record(success, {data :: types:response_data()}).

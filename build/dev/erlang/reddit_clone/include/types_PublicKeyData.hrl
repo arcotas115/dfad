@@ -1,0 +1,1 @@
+-record(public_key_data, {public_key :: gleam@option:option(binary())}).

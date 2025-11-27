@@ -1,0 +1,1 @@
+-record(karma_data, {karma :: integer()}).

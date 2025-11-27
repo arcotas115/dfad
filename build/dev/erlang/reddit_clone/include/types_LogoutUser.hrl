@@ -1,0 +1,1 @@
+-record(logout_user, {user_id :: binary()}).

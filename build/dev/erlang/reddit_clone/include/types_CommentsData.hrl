@@ -1,0 +1,1 @@
+-record(comments_data, {comments :: list(types:comment())}).

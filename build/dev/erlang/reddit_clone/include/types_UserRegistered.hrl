@@ -1,0 +1,1 @@
+-record(user_registered, {user_id :: binary()}).

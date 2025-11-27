@@ -1,0 +1,1 @@
+-record(api_search_subreddits, {'query' :: binary(), limit :: integer()}).

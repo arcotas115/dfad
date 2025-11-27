@@ -1,0 +1,1 @@
+-record(engine_error, {message :: binary()}).

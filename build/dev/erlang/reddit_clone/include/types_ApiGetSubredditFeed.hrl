@@ -1,0 +1,1 @@
+-record(api_get_subreddit_feed, {subreddit :: binary(), limit :: integer()}).

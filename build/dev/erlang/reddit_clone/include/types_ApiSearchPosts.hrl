@@ -1,0 +1,1 @@
+-record(api_search_posts, {'query' :: binary(), limit :: integer()}).

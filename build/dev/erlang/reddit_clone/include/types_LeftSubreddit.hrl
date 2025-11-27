@@ -1,0 +1,1 @@
+-record(left_subreddit, {name :: binary()}).

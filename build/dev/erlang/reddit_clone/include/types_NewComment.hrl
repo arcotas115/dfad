@@ -1,0 +1,1 @@
+-record(new_comment, {comment :: types:comment()}).

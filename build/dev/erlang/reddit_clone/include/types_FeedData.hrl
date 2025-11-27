@@ -1,0 +1,1 @@
+-record(feed_data, {posts :: list(types:post())}).

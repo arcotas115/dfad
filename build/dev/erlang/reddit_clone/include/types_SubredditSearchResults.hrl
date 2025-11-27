@@ -1,0 +1,1 @@
+-record(subreddit_search_results, {subreddits :: list(types:subreddit())}).

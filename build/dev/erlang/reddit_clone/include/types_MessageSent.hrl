@@ -1,0 +1,1 @@
+-record(message_sent, {message_id :: binary()}).

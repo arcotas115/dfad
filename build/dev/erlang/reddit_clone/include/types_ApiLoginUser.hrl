@@ -1,0 +1,1 @@
+-record(api_login_user, {username :: binary(), password :: binary()}).

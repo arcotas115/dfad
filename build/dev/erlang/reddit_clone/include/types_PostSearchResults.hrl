@@ -1,0 +1,1 @@
+-record(post_search_results, {posts :: list(types:post())}).

@@ -1,0 +1,1 @@
+-record(api_get_user_public_key, {user_id :: binary()}).

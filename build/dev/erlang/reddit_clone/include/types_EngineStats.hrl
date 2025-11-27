@@ -1,0 +1,21 @@
+-record(engine_stats, {
+    total_users :: integer(),
+    total_subreddits :: integer(),
+    total_posts :: integer(),
+    total_comments :: integer(),
+    total_messages :: integer(),
+    active_sessions :: integer(),
+    most_popular_subreddits :: list({binary(), integer()}),
+    performance_metrics :: types:performance_metrics(),
+    uptime_seconds :: integer(),
+    comments_with_replies :: integer(),
+    max_comment_depth :: integer(),
+    threaded_messages :: integer(),
+    repost_count :: integer(),
+    karma_distribution :: {integer(), integer(), integer()},
+    posts_per_second :: float(),
+    comments_per_second :: float(),
+    votes_per_second :: float(),
+    start_time :: integer(),
+    last_update_time :: integer()
+}).

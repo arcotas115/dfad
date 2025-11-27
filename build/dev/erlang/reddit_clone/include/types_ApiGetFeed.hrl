@@ -1,0 +1,1 @@
+-record(api_get_feed, {user_id :: binary(), limit :: integer()}).

@@ -1,0 +1,1 @@
+-record(api_get_messages, {user_id :: binary()}).

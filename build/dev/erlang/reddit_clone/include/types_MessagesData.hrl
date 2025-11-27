@@ -1,0 +1,1 @@
+-record(messages_data, {messages :: list(types:direct_message())}).

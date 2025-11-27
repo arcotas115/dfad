@@ -1,0 +1,1 @@
+-record(active_clients_data, {count :: integer(), users :: list(binary())}).

@@ -1,0 +1,1 @@
+-record(api_get_user_karma, {user_id :: binary()}).

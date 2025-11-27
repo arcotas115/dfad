@@ -1,0 +1,1 @@
+-record(leave_subreddit, {user_id :: binary(), subreddit :: binary()}).

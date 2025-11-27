@@ -1,0 +1,1 @@
+-record(stats_data, {stats :: types:engine_stats()}).

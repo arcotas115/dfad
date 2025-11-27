@@ -1,0 +1,1 @@
+-record(new_direct_message, {message :: types:direct_message()}).

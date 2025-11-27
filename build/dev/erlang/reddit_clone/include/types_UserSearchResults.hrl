@@ -1,0 +1,1 @@
+-record(user_search_results, {users :: list(types:user_info())}).
